@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Manga translation workflow",
+    "description": "Local OCR for marked manga text, GPU de-text and Chinese embedding. Adds manga_ocr, manga_embed and manga_status tools.",
+    "detail": "docs/DETAIL.md"
+  }
+}

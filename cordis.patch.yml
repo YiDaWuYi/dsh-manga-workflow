@@ -1,0 +1,6 @@
+- insert:
+    - id: manga-workflow
+      name: dsh-manga-workflow
+      config:
+        scriptsDir: 'E:/manga_tool'
+        pythonPath: 'E:/_venv/Scripts/python.exe'
