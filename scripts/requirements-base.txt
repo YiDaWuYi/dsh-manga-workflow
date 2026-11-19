@@ -1,0 +1,5 @@
+# 基础依赖:标框/翻译/嵌字 必需(约 100MB)
+Pillow>=9.0
+numpy>=1.23
+opencv-python-headless>=4.6
+requests>=2.28

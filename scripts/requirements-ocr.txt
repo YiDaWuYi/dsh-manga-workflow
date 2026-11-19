@@ -1,0 +1,6 @@
+# 本地 OCR:日文(manga-ocr)/ 韩英(easyocr),需 torch(约 2GB)
+# 提示:想用 GPU 加速,先按 https://pytorch.org 装对应 CUDA 的 torch,再装这里
+torch>=2.0
+torchvision>=0.15
+manga-ocr>=0.1.9
+easyocr>=1.7

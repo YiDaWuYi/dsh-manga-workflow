@@ -63,6 +63,20 @@ DeepSeek Harness 的漫画汉化工作流插件:本地 OCR(日/韩/英)、GPU �
 - 配置存 `manga_tool/_ocr_cfg.json`,网页端与桌面端**改的是同一个文件**;
 - 命令行:`python manga_tool/ocr_fallback.py <本子> --dry-run --mode short` 可先看候选。
 
+## 运行环境(自动探测 + 一键安装)
+
+插件**自带工具链**(OCR / 翻译 / 校对 / 嵌字 / 自动标框脚本都在插件 `scripts/` 里),
+安装后不需要再下载 `manga_tool`。
+
+- **Python 自动探测**:按 `插件配置 → 环境变量 DSH_MANGA_PYTHON → 插件内置 _venv →
+  相邻 _venv → 系统 PATH` 顺序找 Python 3.9+,设置页会显示用的是哪个;
+- **设置页 → 运行环境**:三档依赖状态 + 一键安装
+  - 基础(Pillow / numpy / OpenCV / requests,约 100MB)—— 标框、翻译、嵌字必需
+  - 本地 OCR(torch / manga-ocr / easyocr,约 2GB)—— 要本地 OCR 才装
+  - GPU 去字(iopaint,可选)—— 想用 LaMa 擦字才装
+- 依赖装到**插件目录下的 `_venv`**,不污染系统 Python;安装日志实时滚动;
+- 想用自己已有的环境:在插件配置里写 `pythonPath` / `scriptsDir` 即可优先使用。
+
 ## 成本预估(设置页)
 
 设置页底部有「**成本预估**」,分两块:
@@ -169,7 +183,7 @@ DeepSeek Harness 的漫画汉化工作流插件:本地 OCR(日/韩/英)、GPU �
 ### 方式一:从 GitHub Release tarball(推荐)
 
 ```sh
-dsh plugin --profile <你的profile> add https://github.com/YiDaWuYi/dsh-manga-workflow/releases/download/v1.6.0/dsh-manga-workflow-1.6.0.tgz
+dsh plugin --profile <你的profile> add https://github.com/YiDaWuYi/dsh-manga-workflow/releases/download/v1.7.0/dsh-manga-workflow-1.7.0.tgz
 ```
 
 或在 DSH 的 **插件 → 添加插件** 里填这个 tarball 地址。

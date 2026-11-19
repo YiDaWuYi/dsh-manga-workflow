@@ -156,6 +156,98 @@ function makeVisionTestPng(size = 128) {
   ])
 }
 
+// ---------------- 运行环境探测(自带工具链 + Python) ----------------
+const REQUIRED_SCRIPTS = ['ocr_regions.py', 'embed_regions.py', 'translate.py',
+  'proofread.py', 'styles.py', 'styles.json']
+
+const DEP_MODULES = [
+  { pkg: 'PIL', tier: 'base', label: '图像处理(Pillow)' },
+  { pkg: 'numpy', tier: 'base', label: 'numpy' },
+  { pkg: 'cv2', tier: 'base', label: '图像匹配(OpenCV)' },
+  { pkg: 'requests', tier: 'base', label: '网络请求(requests)' },
+  { pkg: 'torch', tier: 'ocr', label: 'PyTorch(本地 OCR)' },
+  { pkg: 'manga_ocr', tier: 'ocr', label: '日文 OCR(manga-ocr)' },
+  { pkg: 'easyocr', tier: 'ocr', label: '韩英 OCR(easyocr)' },
+  { pkg: 'iopaint', tier: 'gpu', label: 'GPU 去字(iopaint)' },
+]
+
+const _PY_CACHE = new Map()
+
+function probePython(cmd) {
+  try {
+    const out = execFileSync(cmd, ['-c', 'import sys;print("%d.%d" % sys.version_info[:2])'],
+      { encoding: 'utf8', timeout: 20000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    const [maj, min] = out.split('.').map(Number)
+    if (maj === 3 && min >= 9) return { path: cmd, version: out }
+  } catch (e) { /* 不可用 */ }
+  return null
+}
+
+function pythonCandidates({ pythonPath, pluginDir }) {
+  const out = []
+  const add = (p, source) => { if (p) out.push({ path: p, source }) }
+  add(pythonPath, '插件配置')
+  add(process.env.DSH_MANGA_PYTHON, '环境变量 DSH_MANGA_PYTHON')
+  if (pluginDir) {
+    add(path.join(pluginDir, '_venv', 'Scripts', 'python.exe'), '插件内置环境')
+    add(path.join(pluginDir, '_venv', 'bin', 'python'), '插件内置环境')
+    add(path.join(pluginDir, '..', '..', '_venv', 'Scripts', 'python.exe'), '相邻 _venv')
+    add(path.join(pluginDir, '..', '_venv', 'Scripts', 'python.exe'), '相邻 _venv')
+  }
+  add('python', '系统 PATH')
+  add('python3', '系统 PATH')
+  add('py', '系统 PATH')
+  return out
+}
+
+function isCommandName(p) {
+  return !path.isAbsolute(p) && !p.includes('/') && !p.includes('\\')
+}
+
+/** 探测可用的 Python:优先插件内置 venv → 配置 → 环境变量 → 系统 PATH。 */
+export function resolveRuntime({ pythonPath, scriptsDir, toolScriptsDir, config, refresh } = {}) {
+  const cfg = config || {}
+  const pluginDir = toolScriptsDir ? path.dirname(toolScriptsDir) : null
+  const cacheKey = [pythonPath, pluginDir].join('|')
+  let py = refresh ? null : _PY_CACHE.get(cacheKey)
+  if (!py) {
+    py = { path: cfg.pythonPath || 'python', version: '', source: '未找到', ok: false }
+    for (const c of pythonCandidates({ pythonPath: cfg.pythonPath || pythonPath, pluginDir })) {
+      if (!isCommandName(c.path) && !existsSync(c.path)) continue
+      if (existsSync(c.path) || isCommandName(c.path)) {
+        const p = probePython(c.path)
+        if (p) {
+          py = { ...p, source: c.source, ok: true }
+          break
+        }
+      }
+    }
+    _PY_CACHE.set(cacheKey, py)
+  }
+  // 脚本目录:配置里若有完整工具链则用配置,否则用插件自带
+  let sd = { dir: scriptsDir || '', source: '插件配置' }
+  if (!sd.dir || !existsSync(path.join(sd.dir, 'ocr_regions.py'))) {
+    sd = { dir: path.join(pluginDir || '.', 'scripts'), source: '插件自带' }
+  }
+  return { python: py, scripts: sd, pluginDir }
+}
+
+/** 检查依赖包(用 importlib.util.find_spec,不会真的加载 torch)。 */
+export function checkDeps(pythonPath) {
+  const code = 'import importlib.util,json;mods=' + JSON.stringify(DEP_MODULES.map((d) => d.pkg)) +
+    ';print(json.dumps({m: bool(importlib.util.find_spec(m)) for m in mods}))'
+  let map = {}
+  try {
+    const out = execFileSync(pythonPath, ['-c', code],
+      { encoding: 'utf8', timeout: 60000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] })
+    const lines = out.trim().split('\n')
+    map = JSON.parse(lines[lines.length - 1])
+  } catch (e) {
+    map = {}
+  }
+  return DEP_MODULES.map((d) => ({ ...d, ok: !!map[d.pkg] }))
+}
+
 /** 读图片宽高(用 venv 的 PIL,结果按「路径+大小+修改时间」缓存)。 */
 const IMAGE_SIZE_CACHE = new Map()
 function imageSizeOf(pythonPath, file) {
@@ -178,7 +270,11 @@ function imageSizeOf(pythonPath, file) {
   }
 }
 
-export function createMangaDesk({ pythonPath, scriptsDir, toolScriptsDir, runtimeEnv, config, getDirectoryPicker }) {
+export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scriptsDirCfg, toolScriptsDir, runtimeEnv, config, getDirectoryPicker }) {
+  const _rt0 = resolveRuntime({ pythonPath: pythonPathCfg, scriptsDir: scriptsDirCfg, toolScriptsDir, config })
+  const pythonPath = _rt0.python.path
+  const scriptsDir = _rt0.scripts.dir
+  const PLUGIN_DIR = _rt0.pluginDir
   const scriptPath = (f) => path.join(scriptsDir, f)
   const toolPath = (f) => path.join(toolScriptsDir || scriptsDir, f)
   const jobs = new Map()
@@ -299,24 +395,68 @@ export function createMangaDesk({ pythonPath, scriptsDir, toolScriptsDir, runtim
   }
 
   function infra(workRoot) {
-    const join = (...a) => path.join(workRoot, ...a)
+    const py = pickPython()
+    const deps = checkDeps(py.path)
     const items = [
-      ['Python 环境(_venv)', existsSync(join('_venv', 'Scripts', 'python.exe'))],
-      ['PyTorch(CUDA)', existsSync(join('_venv', 'Lib', 'site-packages', 'torch'))],
-      ['日文 OCR(manga-ocr)', existsSync(join('_venv', 'Lib', 'site-packages', 'manga_ocr'))],
-      ['韩文 OCR(easyocr)', existsSync(join('_venv', 'Lib', 'site-packages', 'easyocr'))],
-      ['GPU 去字(iopaint)', existsSync(join('_venv', 'Lib', 'site-packages', 'iopaint'))],
-      ['LaMa 模型', existsSync(join('_torchcache', 'hub', 'checkpoints', 'big-lama.pt'))],
-      ['manga-ocr 模型', existsSync(join('_hfcache', 'hub', 'models--kha-white--manga-ocr-base'))],
-      ['EasyOCR 模型', existsSync(join('_easyocr', 'model'))],
+      { label: 'Python 环境' + (py.version ? '(' + py.version + ')' : ''), ok: !!py.version },
+      ...deps.map((d) => ({ label: d.label, ok: d.ok })),
     ]
     return {
       workRoot,
-      items: items.map(([label, ok]) => ({ label, ok })),
-      missing: items.filter(([, ok]) => !ok).map(([label]) => label),
-      pythonPath,
+      items,
+      missing: items.filter((i) => !i.ok).map((i) => i.label),
+      pythonPath: py.path,
+      pythonSource: py.source,
       scriptsDir,
+      scriptsSource: _rt0.scripts.source,
     }
+  }
+
+  function pickPython(refresh) {
+    const rt = resolveRuntime({
+      pythonPath: pythonPathCfg, scriptsDir: scriptsDirCfg, toolScriptsDir, config, refresh,
+    })
+    if (refresh) _PY_CACHE.clear()
+    return rt.python
+  }
+
+  function installDeps(tier, onData) {
+    const runCmd = (cmd, args) => new Promise((resolve) => {
+      let out = ''
+      let err = ''
+      let child
+      try {
+        child = spawn(cmd, args, { env: { ...process.env, ...(runtimeEnv || {}) }, windowsHide: true })
+      } catch (e) {
+        return resolve({ code: -1, out: '', err: String(e) })
+      }
+      child.stdout.on('data', (d) => { out += d.toString(); onData && onData(d.toString()) })
+      child.stderr.on('data', (d) => { err += d.toString(); onData && onData(d.toString()) })
+      child.on('close', (code) => resolve({ code, out, err }))
+      child.on('error', (e) => resolve({ code: -1, out, err: err + String(e) }))
+    })
+    const venvDir = path.join(PLUGIN_DIR || '.', '_venv')
+    const venvPy = process.platform === 'win32'
+      ? path.join(venvDir, 'Scripts', 'python.exe')
+      : path.join(venvDir, 'bin', 'python')
+    const py = pickPython()
+    return (async () => {
+      if (!existsSync(venvPy)) {
+        onData && onData('[1/3] 创建独立运行环境:' + venvDir + '\n')
+        const base = py.ok ? py.path : 'python'
+        const r = await runCmd(base, ['-m', 'venv', venvDir])
+        if (r.code !== 0) return r
+      }
+      const target = existsSync(venvPy) ? venvPy : py.path
+      onData && onData('[2/3] 升级 pip\n')
+      await runCmd(target, ['-m', 'pip', 'install', '--upgrade', 'pip'])
+      const req = path.join(scriptsDir, 'requirements-' + tier + '.txt')
+      if (!existsSync(req)) return { code: -1, out: '', err: '缺少依赖清单:' + req }
+      onData && onData('[3/3] 安装 ' + tier + ' 依赖(可能需要几分钟)\n')
+      const r2 = await runCmd(target, ['-m', 'pip', 'install', '-r', req])
+      _PY_CACHE.clear()
+      return r2
+    })()
   }
 
   function launchDesktop(folder) {
@@ -631,6 +771,51 @@ export function createMangaDesk({ pythonPath, scriptsDir, toolScriptsDir, runtim
       } finally {
         clearTimeout(timer)
       }
+    }
+
+    // 运行环境:状态(自动探测 Python + 依赖)
+    if (name === 'setup/status') {
+      const py = pickPython(true)
+      const deps = checkDeps(py.path)
+      const missing = REQUIRED_SCRIPTS.filter((f) => !existsSync(path.join(scriptsDir, f)))
+      const venvDir = path.join(PLUGIN_DIR || '.', '_venv')
+      const venvPy = process.platform === 'win32'
+        ? path.join(venvDir, 'Scripts', 'python.exe')
+        : path.join(venvDir, 'bin', 'python')
+      const reqs = {}
+      for (const t of ['base', 'ocr', 'gpu']) {
+        reqs[t] = existsSync(path.join(scriptsDir, 'requirements-' + t + '.txt'))
+      }
+      return json(res, 200, {
+        python: py,
+        scripts: { dir: scriptsDir, source: _rt0.scripts.source, missing },
+        deps,
+        missingCount: deps.filter((d) => !d.ok).length,
+        venv: { dir: venvDir, exists: existsSync(venvPy) },
+        requirements: reqs,
+        pluginDir: PLUGIN_DIR,
+      })
+    }
+
+    // 运行环境:一键安装依赖(base / ocr / gpu),返回 jobId 供轮询
+    if (name === 'setup/install' && req.method === 'POST') {
+      const raw = await readBody(req)
+      let body = {}
+      try { body = JSON.parse(raw || '{}') } catch {}
+      const tier = ['base', 'ocr', 'gpu'].includes(body.tier) ? body.tier : 'base'
+      const id = 's' + Date.now().toString(36)
+      const job = { id, step: 'setup:' + tier, folder: '', status: 'running', code: null,
+                    log: '准备中…\n', started: Date.now() }
+      jobs.set(id, job)
+      installDeps(tier, (t) => { job.log += t })
+        .then((r) => {
+          job.status = 'done'
+          job.code = r.code
+          job.log += '\n' + (r.out || '') + (r.err || '')
+          job.log += r.code === 0 ? '\n[完成] 依赖已安装,请点「重新检测」\n' : '\n[失败] 请查看上面的错误\n'
+        })
+        .catch((e) => { job.status = 'error'; job.log += '\n' + String((e && e.message) || e) })
+      return json(res, 200, { ok: true, jobId: id, tier })
     }
 
     // 文字样式预设(styles.json,与桌面端/嵌字渲染共用)

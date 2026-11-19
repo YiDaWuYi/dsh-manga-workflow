@@ -1,0 +1,2 @@
+# GPU 去字(LaMa,inpainting):体积大、需要显卡,可选
+iopaint>=1.0

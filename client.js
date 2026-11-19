@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-manga-workflow',
   factory(require) {
   // 版本号(发布时同步 package.json / 桌面端 mark_tool.py)
-  const APP_VERSION = 'V1.6';
+  const APP_VERSION = 'V1.7';
 
     const React = require('react');
     const h = React.createElement;
@@ -455,6 +455,11 @@ window.__ModuleLoader__.load({
         '· DSH 侧边栏:是否显示「漫画工作台」入口(双端共享)',
         '· 启动提示弹窗:输入框下方那条「已就绪」提示(双端共享,默认开)',
         '· 记忆上次路径:网页端与桌面端各自独立控制',
+        '',
+        '【运行环境】',
+        '· 显示自动探测到的 Python(路径/版本/来源)与插件自带工具链目录',
+        '· 三档依赖可一键安装:基础(标框/翻译/嵌字)、本地 OCR(含 torch)、GPU 去字',
+        '· 依赖装在插件目录的 _venv 里,不影响系统 Python;装完点「重新检测」',
       ];
       const OCRFB = [
         '本地 OCR(manga_ocr / easyocr)读不出来、明显漏字时,可以让视觉引擎重读那几个框。',
@@ -651,6 +656,9 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = React.useState(false);
       const [saved, setSaved] = React.useState(false);
       const [uiCfg, setUiCfg] = React.useState(null);
+      const [setup, setSetup] = React.useState(null);
+      const [setupLog, setSetupLog] = React.useState('');
+      const [setupBusy, setSetupBusy] = React.useState('');
       const [cost, setCost] = React.useState(null);
       const [ocrCfg, setOcrCfg] = React.useState(null);
       const [ocrMin, setOcrMin] = React.useState('1');
@@ -661,6 +669,46 @@ window.__ModuleLoader__.load({
       const [priceOut, setPriceOut] = React.useState(() => {
         try { const p = JSON.parse(localStorage.getItem('manga-desk-prices') || '{}'); return p.out == null ? '' : String(p.out); } catch (e) { return ''; }
       });
+
+      async function refreshSetup() {
+        try {
+          const d = await api('/setup/status');
+          setSetup(d);
+        } catch (e) {
+          setSetup({ error: String(e.message || e) });
+        }
+      }
+
+      async function installDeps(tier) {
+        if (setupBusy) return;
+        setSetupBusy(tier);
+        setSetupLog('准备安装 ' + tier + ' 依赖…\n');
+        try {
+          const { jobId } = await api('/setup/install', { tier });
+          let last = '';
+          for (;;) {
+            await new Promise((r) => setTimeout(r, 1200));
+            const j = await api('/job?id=' + encodeURIComponent(jobId));
+            if (j.log && j.log !== last) {
+              last = j.log;
+              setSetupLog(j.log);
+            }
+            if (j.status !== 'running') {
+              setSetupLog((j.log || '') + (j.code === 0 ? '\n[完成]' : '\n[失败] 退出码 ' + j.code));
+              break;
+            }
+          }
+          await refreshSetup();
+        } catch (e) {
+          setSetupLog('安装失败:' + String(e.message || e));
+        } finally {
+          setSetupBusy('');
+        }
+      }
+
+      React.useEffect(() => {
+        refreshSetup();
+      }, []);
 
       React.useEffect(() => {
         const q = folder ? ('?folder=' + encodeURIComponent(folder)) : '';
@@ -954,6 +1002,81 @@ window.__ModuleLoader__.load({
           ocrCfg && ocrCfg.file
             ? h('div', { style: { ...S.muted, marginTop: '4px', fontSize: '11px' } }, `配置:${ocrCfg.file}`)
             : null,
+        ),
+        h('div', { style: { ...S.box, marginTop: '10px' } },
+          h('div', { style: { fontWeight: 600, marginBottom: '6px' } }, '运行环境'),
+          !setup
+            ? h('div', { style: S.muted }, '检测中…')
+            : setup.error
+              ? h('div', { style: { color: '#ff8080' } }, '检测失败:' + setup.error)
+              : h(React.Fragment, null,
+                  h('div', { style: S.row },
+                    h('span', { style: { ...S.muted, width: '64px' } }, 'Python'),
+                    h('span', { style: { fontSize: '11px', wordBreak: 'break-all' } },
+                      (setup.python && setup.python.path) || '(未找到)'),
+                    setup.python && setup.python.version
+                      ? h('span', { style: { ...S.muted, fontSize: '11px' } },
+                          `v${setup.python.version} · ${setup.python.source}`)
+                      : h('span', { style: { color: '#ff8080', fontSize: '11px' } },
+                          '未检测到 Python 3.9+ —— 请先安装 Python(安装时勾选 Add to PATH),或装好后点「重新检测」'),
+                  ),
+                  h('div', { style: S.row },
+                    h('span', { style: { ...S.muted, width: '64px' } }, '工具链'),
+                    h('span', { style: { fontSize: '11px' } }, setup.scripts.source),
+                    h('span', { style: { ...S.muted, fontSize: '11px', wordBreak: 'break-all' } }, setup.scripts.dir),
+                    setup.scripts.missing.length
+                      ? h('span', { style: { color: '#ff8080', fontSize: '11px' } },
+                          '缺少 ' + setup.scripts.missing.join('、'))
+                      : h('span', { style: { color: '#4caf50', fontSize: '11px' } }, '齐全'),
+                  ),
+                  h('div', { style: { ...S.row, marginTop: '4px' } },
+                    h('span', { style: { ...S.muted, width: '64px' } }, '依赖'),
+                    (function () {
+                      const tiers = [
+                        ['base', '基础(标框/翻译/嵌字)'],
+                        ['ocr', '本地 OCR'],
+                        ['gpu', 'GPU 去字'],
+                      ];
+                      return tiers.map(([t, name]) => {
+                        const list = (setup.deps || []).filter((d) => d.tier === t);
+                        const ok = list.filter((d) => d.ok).length;
+                        const all = list.length;
+                        return h('span', {
+                          key: t,
+                          title: list.map((d) => (d.ok ? '✅ ' : '❌ ') + d.label).join('\n'),
+                          style: { fontSize: '11px', padding: '1px 6px', borderRadius: '10px',
+                                   border: '1px solid rgba(128,128,128,0.35)',
+                                   color: ok === all ? '#4caf50' : '#ffb020' },
+                        }, `${name} ${ok}/${all}`);
+                      });
+                    })(),
+                  ),
+                  h('div', { style: { ...S.row, marginTop: '6px' } },
+                    h('button', { type: 'button', style: S.btn, onClick: refreshSetup }, '重新检测'),
+                    h('button', {
+                      type: 'button', style: S.btn, disabled: !!setupBusy,
+                      onClick: () => installDeps('base'),
+                    }, setupBusy === 'base' ? '安装中…' : '装基础依赖'),
+                    h('button', {
+                      type: 'button', style: S.btn, disabled: !!setupBusy,
+                      onClick: () => installDeps('ocr'),
+                    }, setupBusy === 'ocr' ? '安装中…' : '装 OCR 依赖(含 torch,大)'),
+                    h('button', {
+                      type: 'button', style: S.btn, disabled: !!setupBusy,
+                      onClick: () => installDeps('gpu'),
+                    }, setupBusy === 'gpu' ? '安装中…' : '装 GPU 去字(可选)'),
+                  ),
+                  h('div', { style: { ...S.muted, fontSize: '10px', marginTop: '2px' } },
+                    '首次使用请先「装基础依赖」;要本地 OCR 再装 OCR 依赖(约 2GB);GPU 去字可选。'
+                    + ' 依赖会装到插件目录下的 _venv 里,不影响系统 Python。'),
+                  setupLog
+                    ? h('pre', {
+                        style: { marginTop: '6px', maxHeight: '180px', overflow: 'auto',
+                                 fontSize: '10px', lineHeight: '1.35', background: 'rgba(0,0,0,0.25)',
+                                 padding: '6px', borderRadius: '6px', whiteSpace: 'pre-wrap' },
+                      }, setupLog)
+                    : null,
+                ),
         ),
         (function renderCost() {
           const pi = Number(priceIn) || 0;

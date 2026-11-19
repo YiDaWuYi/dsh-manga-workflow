@@ -13,15 +13,15 @@ import { spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { createMangaDesk } from './src/host.js'
+import { createMangaDesk, resolveRuntime } from './src/host.js'
 
 const PLUGIN_DIR = path.dirname(fileURLToPath(import.meta.url))
 
 export const name = 'manga-workflow'
 export const inject = ['tools', 'webServer', 'connection']
 
-const DEFAULT_SCRIPTS = 'E:/manga_tool'
-const DEFAULT_PYTHON = 'E:/_venv/Scripts/python.exe'
+// 工具链随插件发布(PLUGIN_DIR/scripts);python 自动探测,无需手动配置
+const DEFAULT_SCRIPTS = path.join(PLUGIN_DIR, 'scripts')
 
 const TEXT_OUTPUT = {
   schema: {
@@ -66,8 +66,14 @@ function tail(text, limit) {
 }
 
 export function apply(ctx, config = {}) {
-  const scriptsDir = config.scriptsDir || DEFAULT_SCRIPTS
-  const pythonPath = config.pythonPath || DEFAULT_PYTHON
+  const _rt = resolveRuntime({
+    pythonPath: config.pythonPath,
+    scriptsDir: config.scriptsDir || DEFAULT_SCRIPTS,
+    toolScriptsDir: path.join(PLUGIN_DIR, 'scripts'),
+    config,
+  })
+  const scriptsDir = _rt.scripts.dir
+  const pythonPath = _rt.python.path
   const workRoot = path.dirname(scriptsDir)
   const runtimeEnv = {
     TORCH_HOME: config.torchHome || path.join(workRoot, '_torchcache'),

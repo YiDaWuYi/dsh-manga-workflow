@@ -4,6 +4,72 @@
 
 > **发版规则**:版本号命名、日志格式与发版检查清单见 [RELEASING.md](./RELEASING.md)。
 
+## [1.7.0] — 2026-11-20
+
+**主题:插件自带工具链 + 运行环境自动探测 / 一键安装依赖**
+
+### 新增
+
+- **工具链随插件发布**:OCR、翻译、校对、嵌字、自动标框、样式定义等脚本
+  (含 `styles.json`、桌面工具 `mark_tool.py`)全部打进插件包,`scripts/` 目录自包含;
+  安装后**无需再单独下载 manga_tool**。
+- **Python 自动探测**:按 `插件配置 → 环境变量 DSH_MANGA_PYTHON → 插件内置 _venv →
+  相邻 _venv → 系统 PATH` 顺序寻找 Python 3.9+,自动选中可用的那个并在设置页显示
+  路径、版本与来源。
+- **工具链目录自动解析**:配置里若有完整工具链则用配置,否则自动用插件自带 `scripts/`,
+  不再依赖写死的绝对路径(旧版默认指向 `E:/manga_tool`,换机器就失效)。
+- **设置页「运行环境」区块**:显示 Python 版本/来源、工具链目录与缺失文件、
+  基础/OCR/GPU 三档依赖的安装状态,并提供:
+  - 「重新检测」
+  - 「装基础依赖」(Pillow / numpy / OpenCV / requests,约 100MB)
+  - 「装 OCR 依赖」(torch / manga-ocr / easyocr,约 2GB)
+  - 「装 GPU 去字」(iopaint,可选)
+  安装过程**实时滚动日志**(复用任务轮询),装到插件目录下的 `_venv`,不污染系统 Python。
+- 新增接口:`/manga-desk/setup/status`、`/manga-desk/setup/install`
+  (返回 jobId,与 `/run` 同一套日志轮询)。
+- 依赖清单随包提供:`requirements-base.txt` / `requirements-ocr.txt` / `requirements-gpu.txt`。
+
+### 改进
+
+- `/infra` 引擎检测改为**真实依赖探测**(`importlib.util.find_spec`,不会加载 torch),
+  并返回 `pythonSource` / `scriptsSource`,能看出用的是哪个 Python、哪套脚本。
+- `manga_ocr` / `manga_embed` / `manga_status` / `manga_bench` 工具改用同一套解析结果,
+  与网页端行为一致。
+
+### 修复
+
+- 修复换机器后插件因找不到 `E:/manga_tool` 而整体不可用的问题(默认路径可移植化)。
+- 修复"插件的 Python 与脚本使用的环境不是同一个,导致依赖明明装了却报缺"的隐患。
+
+### 配置与文件变化
+
+| 文件 | 说明 |
+| --- | --- |
+| `scripts/*.py` | 新增:工具链脚本随包(ocr/embed/translate/proofread/fallback/detect/mark_tool) |
+| `scripts/styles.json` | 新增:样式定义随包(网页端直接读取) |
+| `scripts/requirements-*.txt` | 新增:三档依赖清单 |
+| 插件目录 `_venv/` | 新增(首次安装依赖时自动创建) |
+
+### 升级说明
+
+- 插件安装 `dsh-manga-workflow-1.7.0.tgz` 后,**设置页 → 运行环境** 点「装基础依赖」即可;
+- 已有自建环境的用户:配置里的 `pythonPath` / `scriptsDir` 仍优先生效,不受影响;
+- 桌面版:`mark_tool.py` 现在也在插件 scripts 里(插件自带),无需单独维护副本。
+
+### 测试
+
+- `/setup/status` 实测:自动探测到 Python 3.12(来源「相邻 _venv」)、工具链「插件自带」、
+  8 项依赖全部识别正常;
+- `/infra` 返回 pythonSource / scriptsSource,引擎检测项与依赖探测一致;
+- 配置留空(scriptsDir=''、pythonPath='')时,host 能正确回退到插件自带目录与自动探测的 Python;
+- 打包后包内 `scripts/` 含 16 个文件(12 个脚本 + styles.json + 3 个 requirements)。
+
+### 已知限制
+
+- OCR 依赖含 torch(约 2GB),首次安装耗时较长;GPU 版 torch 需按 pytorch.org 指引单独安装;
+- 依赖安装使用系统 pip,若网络需要代理,请在系统环境变量或 pip 配置里设置;
+- 桌面版 `mark_tool.py` 仍需本机 tkinter(Windows 自带 Python 一般都有)。
+
 ## [1.6.0] — 2026-11-19
 
 **主题:正文/拟声词可视化样式库**
