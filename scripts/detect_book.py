@@ -7,7 +7,7 @@ import sys, os, json
 import numpy as np
 from PIL import Image
 import easyocr
-from detect_boxes import analyze, in_bubble, merge_fragments
+from detect_boxes import analyze, in_bubble, merge_fragments, _is_body
 
 EXTS = ('.webp', '.png', '.jpg', '.jpeg', '.bmp')
 DEFAULT_BOX = {'vertical': True, 'size': 20, 'nobox': False, 'color': 'black', 'outline': False, 'auto': True}
@@ -23,7 +23,14 @@ def main():
         except Exception:
             regions = {}
 
-    bubble_only = '--all' not in sys.argv
+    mode = 'bubble'
+    if '--mode' in sys.argv:
+        mode = sys.argv[sys.argv.index('--mode') + 1]
+        if mode not in ('all', 'bubble', 'sfx'):
+            mode = 'bubble'
+    elif '--all' in sys.argv:
+        mode = 'all'
+    bubble_only = (mode == 'bubble')
     pages = sorted(f for f in os.listdir(src) if f.lower().endswith(EXTS))
     reader = easyocr.Reader(['ko'], gpu=True, verbose=False)
 
@@ -57,15 +64,36 @@ def main():
             if k in seen:
                 return
             seen.add(k)
-            if bubble_only and not in_bubble(labels, stats, holes, H, W, x0, y0, w, h, gray=gray):
+            inb = in_bubble(labels, stats, holes, H, W, x0, y0, w, h, gray=gray)
+            if bubble_only and not inb:
                 dropped += 1
                 return
-            # 跳过与已有框高度重叠的
+            if mode == 'sfx' and inb:
+                dropped += 1
+                return
+            # 跳过与已有标注重叠的框(不再把已标注的框重新标一遍)
             for eb in existing:
-                if abs(eb['x'] - x0) < 12 and abs(eb['y'] - y0) < 12 and abs(eb['w'] - w) < 16 and abs(eb['h'] - h) < 16:
-                    return
+                try:
+                    acx, acy = x0 + w / 2.0, y0 + h / 2.0
+                    if eb['x'] <= acx <= eb['x'] + eb['w'] and eb['y'] <= acy <= eb['y'] + eb['h']:
+                        return
+                    bcx, bcy = eb['x'] + eb['w'] / 2.0, eb['y'] + eb['h'] / 2.0
+                    if x0 <= bcx <= x0 + w and y0 <= bcy <= y0 + h:
+                        return
+                    ix0 = max(x0, eb['x']); iy0 = max(y0, eb['y'])
+                    ix1 = min(x0 + w, eb['x'] + eb['w']); iy1 = min(y0 + h, eb['y'] + eb['h'])
+                    if ix1 > ix0 and iy1 > iy0:
+                        inter = (ix1 - ix0) * (iy1 - iy0)
+                        union = w * h + eb['w'] * eb['h'] - inter
+                        if union > 0 and inter / float(union) > 0.25:
+                            return
+                except Exception:
+                    continue
             b = dict(DEFAULT_BOX)
-            b.update({'x': x0, 'y': y0, 'w': w, 'h': h})
+            _kind = 'body' if _is_body(gray, inb, x0, y0, w, h) else 'plain'
+            b.update({'x': x0, 'y': y0, 'w': w, 'h': h, 'kind': _kind,
+                      'sfx': _kind == 'plain', 'erase': False,
+                      'cover': 'overlay' if _kind == 'plain' else 'cover'})
             new_boxes.append(b)
 
         for group in horiz:

@@ -152,6 +152,28 @@ def _bright(gray, x, y, w, h, pad=0, ring=False):
     return 0.0 if vals.size == 0 else float((vals > 200).mean())
 
 
+def _ink_ratio(gray, x, y, w, h):
+    """框内深色像素比例(0-1)。拟声词笔画粗/底色深,墨量通常明显更高。"""
+    H, W = gray.shape
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(W, x + w), min(H, y + h)
+    if x1 <= x0 or y1 <= y0:
+        return 0.0
+    sub = gray[y0:y1, x0:x1]
+    return float((sub < 128).mean()) if sub.size else 0.0
+
+
+def _is_body(gray, in_bubble_flag, x, y, w, h):
+    """正文判定:气泡内且墨量不高;或超大浅墨块(大气泡对话)。其余按拟声词。"""
+    H = gray.shape[0]
+    ink = _ink_ratio(gray, x, y, w, h)
+    if in_bubble_flag and ink < 0.25:
+        return True
+    if (not in_bubble_flag) and ink < 0.12 and h >= 0.12 * H:
+        return True
+    return False
+
+
 def in_bubble(labels, stats, holes, H, W, x, y, w, h, gray=None):
     """只标气泡内文字。先看轮廓洞(准),再补一条宽松判定:文字块 + 框内/框外都很白。
     加 --all 参数时不过滤,由主程序决定要不要用。"""
@@ -167,7 +189,15 @@ def in_bubble(labels, stats, holes, H, W, x, y, w, h, gray=None):
 
 def main():
     path = sys.argv[1]
-    bubble_only = '--all' not in sys.argv
+    # 模式:all=全部(自动区分正文/拟声词) bubble=只标气泡 sfx=只标气泡外的拟声词
+    mode = 'bubble'
+    if '--mode' in sys.argv:
+        mode = sys.argv[sys.argv.index('--mode') + 1]
+        if mode not in ('all', 'bubble', 'sfx'):
+            mode = 'bubble'
+    elif '--all' in sys.argv:
+        mode = 'all'
+    bubble_only = (mode == 'bubble')
     img = np.array(Image.open(path).convert('RGB'))
     gray = np.array(Image.open(path).convert('L'))
     labels, stats, holes, H, W = analyze(img)
@@ -189,10 +219,15 @@ def main():
         if key in seen:
             return
         seen.add(key)
-        if bubble_only and not in_bubble(labels, stats, holes, H, W, x0, y0, w, h, gray=gray):
+        inb = in_bubble(labels, stats, holes, H, W, x0, y0, w, h, gray=gray)
+        if bubble_only and not inb:
             dropped += 1
             return
-        boxes.append({'x': x0, 'y': y0, 'w': w, 'h': h})
+        if mode == 'sfx' and inb:
+            dropped += 1
+            return
+        boxes.append({'x': x0, 'y': y0, 'w': w, 'h': h,
+                      'kind': 'body' if _is_body(gray, inb, x0, y0, w, h) else 'plain'})
 
     for group in horiz:
         for b in group:
@@ -205,7 +240,15 @@ def main():
             add(min(xs), min(ys), max(xs), max(ys))
 
     boxes = merge_fragments(boxes)   # 把被拆碎的竖排多列/横排多行合并回一个气泡
-    print(json.dumps({'boxes': boxes, 'dropped': dropped}, ensure_ascii=False))
+    # 合并后重新判定类型(气泡内=正文,气泡外=拟声词)
+    for b in boxes:
+        try:
+            inb = in_bubble(labels, stats, holes, H, W,
+                            b['x'], b['y'], b['w'], b['h'], gray=gray)
+            b['kind'] = 'body' if _is_body(gray, inb, b['x'], b['y'], b['w'], b['h']) else 'plain'
+        except Exception:
+            b.setdefault('kind', 'body')
+    print(json.dumps({'boxes': boxes, 'dropped': dropped, 'mode': mode}, ensure_ascii=False))
 
 
 if __name__ == '__main__':

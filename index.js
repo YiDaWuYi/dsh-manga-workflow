@@ -18,7 +18,7 @@ import { createMangaDesk, resolveRuntime } from './src/host.js'
 const PLUGIN_DIR = path.dirname(fileURLToPath(import.meta.url))
 
 export const name = 'manga-workflow'
-export const inject = ['tools', 'webServer', 'connection']
+export const inject = ['tools', 'webServer', 'connection', 'llm']
 
 // 工具链随插件发布(PLUGIN_DIR/scripts);python 自动探测,无需手动配置
 const DEFAULT_SCRIPTS = path.join(PLUGIN_DIR, 'scripts')
@@ -85,7 +85,10 @@ export function apply(ctx, config = {}) {
 
   // 侧边栏工作台的 HTTP 接口
   try {
-    const desk = createMangaDesk({ pythonPath, scriptsDir, toolScriptsDir: path.join(PLUGIN_DIR, 'scripts'), runtimeEnv, config, getDirectoryPicker: () => ctx.get('directoryPicker') })
+    let _llm = null
+  try { _llm = ctx.get('llm') || null } catch (e) { _llm = null }
+  const desk = createMangaDesk({
+    llm: _llm, pythonPath, scriptsDir, toolScriptsDir: path.join(PLUGIN_DIR, 'scripts'), runtimeEnv, config, getDirectoryPicker: () => ctx.get('directoryPicker') })
     ctx.effect(() => ctx.webServer.register({
       kind: 'prefix',
       path: '/manga-desk',
@@ -241,3 +244,9 @@ export function apply(ctx, config = {}) {
   })
 }
 
+  // 插件卸载/重载时关闭本机翻译桥
+  try {
+    if (typeof ctx.effect === 'function') {
+      ctx.effect(() => () => { try { desk.stopDshBridge && desk.stopDshBridge() } catch (e) { /* ignore */ } })
+    }
+  } catch (e) { /* ignore */ }

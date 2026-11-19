@@ -16,11 +16,12 @@ import styles
 # 项目根目录(manga_tool 的上一级),所有路径从这里推导
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import cv2
+import math
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-def load_font(size, bold=False, art=False):
-    return styles.load_font(size, bold, art)
+def load_font(size, bold=False, art=False, family=None):
+    return styles.load_font(size, bold, art, family)
 
 def inpaint_rect(arr, x, y, w, h):
     H, W = arr.shape[:2]
@@ -31,7 +32,7 @@ def inpaint_rect(arr, x, y, w, h):
     region = arr[y0:y1, x0:x1].copy()
     gray = cv2.cvtColor(region, cv2.COLOR_RGB2GRAY)
     _, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    if mask.mean() < 2:
+    if not mask.any():          # 整框都没检测到文字才跳过(小字也要擦)
         return
     mask = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=1)
     rgb = cv2.cvtColor(region, cv2.COLOR_RGB2BGR)
@@ -39,9 +40,15 @@ def inpaint_rect(arr, x, y, w, h):
     arr[y0:y1, x0:x1] = cv2.cvtColor(out, cv2.COLOR_BGR2RGB)
 
 def inpaint_mask(arr, points, brush=9):
-    """按涂抹的笔画点生成自由形状遮罩并 inpaint(不伤笔画外的画面)。"""
+    """按「自由框选」的笔画生成遮罩并 inpaint。
+
+    笔画围成的区域(多边形)一起处理,笔画本身也处理;
+    但**不会**把外接矩形整块抹掉(v1.0 的顽固问题)。
+    """
     H, W = arr.shape[:2]
     mask = np.zeros((H, W), np.uint8)
+    if len(points) >= 3:
+        cv2.fillPoly(mask, [np.array(points, dtype=np.int32)], 255)
     for x, y in points:
         cv2.circle(mask, (int(x), int(y)), brush, 255, -1)
     if mask.sum() < 20:
@@ -118,6 +125,70 @@ def _draw_char(draw, xy, ch, font, st, s):
     styles.draw_styled(draw, xy, ch, font, st, s)
 
 
+def _fits_vertical(text, w, h, s):
+    """竖排:按框高每列字数 + 列宽,判断字号 s 是否放得下。"""
+    if s <= 0 or not text:
+        return False
+    per_col = max(1, int((h - 6) // (s + 3)))
+    ncol = int(math.ceil(len(text) / float(per_col)))
+    return ncol * (s + 4) <= w + 2
+
+
+def _fits_horizontal(draw, text, w, h, s, st):
+    """横排:按框宽折行后看行高总和是否放得下。"""
+    if s <= 0 or not text:
+        return False
+    font = load_font(s, bool(st.get('bold')), bool(st.get('art')), st.get('font'))
+    lines = []
+    for para in text.split(chr(10)):
+        cur = ''
+        for ch in para:
+            try:
+                tw = draw.textlength(cur + ch, font=font)
+            except Exception:
+                tw = (len(cur) + 1) * s
+            if tw <= w - 6:
+                cur += ch
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = ch
+        if cur:
+            lines.append(cur)
+    return len(lines) * (s + 4) <= h + 4
+
+
+def fit_size(draw, text, w, h, start, st, vertical, grow=False):
+    """计算适配框的字号。
+
+    grow=False(正文/标题):从小往大靠 start,放不下就缩小,最小 6 号;
+    grow=True (拟声词):在放得下的前提下尽量放大,直到接近填满框。
+    返回 (字号, 是否还需要再缩)。
+    """
+    text = text or ''
+    start = max(6, int(start or 20))
+    lo_s, hi_s = 6, min(140, max(12, int(min(w, h) * 0.9)))
+    def fits(s):
+        return _fits_vertical(text, w, h, s) if vertical else _fits_horizontal(draw, text, w, h, s, st)
+    if grow:
+        s = max(start, lo_s)
+        cap = hi_s
+        if not fits(s):
+            # 起点就放不下 → 退化为缩小
+            while s > lo_s and not fits(s):
+                s -= 1
+            return s, not fits(s)
+        while s + 1 <= cap and fits(s + 1):
+            s += 1
+        return s, False
+    s = start
+    if s > hi_s:
+        s = hi_s
+    while s > lo_s and not fits(s):
+        s -= 1
+    return s, not fits(s)
+
+
 def draw_vtext(draw, text, x, y, w, h, size, st):
     """竖排:按框高自动折列(超框另起一列),放不下则逐步缩小字号。返回是否放得下。"""
     chunks = [c for c in text.split('|') if c]
@@ -141,7 +212,7 @@ def draw_vtext(draw, text, x, y, w, h, size, st):
         s -= 1
     if not cols:
         return False
-    font = load_font(s, bool(st.get('bold')), bool(st.get('art')))
+    font = load_font(s, bool(st.get('bold')), bool(st.get('art')), st.get('font'))
     ncol = len(cols)
     total_w = ncol * col_w
     start_x = x + (w - total_w) / 2
@@ -160,7 +231,7 @@ def draw_htext(draw, text, x, y, w, h, size, st):
     lines = []
     fits = False
     while s > 8:
-        font = load_font(s, bool(st.get('bold')), bool(st.get('art')))
+        font = load_font(s, bool(st.get('bold')), bool(st.get('art')), st.get('font'))
         lines = []
         for para in text.split(chr(10)):
             cur = ''
@@ -177,7 +248,7 @@ def draw_htext(draw, text, x, y, w, h, size, st):
             fits = True
             break
         s -= 1
-    font = load_font(s, bool(st.get('bold')), bool(st.get('art')))
+    font = load_font(s, bool(st.get('bold')), bool(st.get('art')), st.get('font'))
     cy = y + 3
     for ln in lines:
         _draw_char(draw, (x + 3, cy), ln, font, st, s)
@@ -300,6 +371,7 @@ def main():
         for _r in regions[page]:
             _r['_auto_size'] = estimate_font_size(arr_orig, _r) if auto_size else None
             _r['_auto_vertical'] = detect_vertical(arr_orig, _r) if auto_dir else None
+        AutoSizeOn = bool(auto_size)
         zh_list = trans[page]
         # 第一遍:擦除(预览模式跳过;只有有译文才擦,没译文的保持原样避免模糊)
         if not preview:
@@ -308,6 +380,7 @@ def main():
                 img = lama_erase(img, regions[page], zh_list)
                 arr = np.array(img)
             else:
+                gpu_sub, gpu_zh = [], []
                 for i, r in enumerate(regions[page]):
                     zh = zh_list[i] if i < len(zh_list) else ""
                     if not zh:
@@ -315,15 +388,47 @@ def main():
                     # 自动标框的框不参与嵌字(需人工改字确认)
                     if r.get('auto'):
                         continue
-                    # 只看「抹除原文」开关
-                    if not r.get('erase', not r.get('nobox', False)):
+                    mode = styles.cover_mode(r)     # overlay / erase / cover
+                    if mode != 'erase':
+                        continue
+                    if styles.gpu_of(r):
+                        # 标记了 GPU 去字的框:收集起来交给 LaMa 统一处理
+                        gpu_sub.append(r)
+                        gpu_zh.append(zh)
                         continue
                     if r.get('points'):
-                        # 涂抹(不勾无框):按自由形状精确擦除
+                        # 自由框选:按自由形状精确擦除
                         inpaint_mask(arr, r['points'])
                     else:
                         x, y, w, h = r['x'], r['y'], r['w'], r['h']
                         inpaint_rect(arr, x, y, w, h)
+                if gpu_sub:
+                    try:
+                        img2g = lama_erase(Image.fromarray(arr), gpu_sub, gpu_zh)
+                        arr = np.array(img2g)
+                    except Exception as e:
+                        print('[GPU去字] 失败,改用普通抹除:', str(e)[:120])
+                        for r in gpu_sub:
+                            if r.get('points'):
+                                inpaint_mask(arr, r['points'])
+                            else:
+                                inpaint_rect(arr, r['x'], r['y'], r['w'], r['h'])
+            # 色块覆盖:用框边缘中位色盖住原文(只覆盖,不做修复)
+            if not preview:
+                cover_list = []
+                for i, r in enumerate(regions[page]):
+                    zh = zh_list[i] if i < len(zh_list) else ""
+                    if not zh or r.get('auto'):
+                        continue
+                    if styles.cover_mode(r) == 'cover':
+                        cover_list.append(r)
+                if cover_list:
+                    tmp = Image.fromarray(arr)
+                    d2 = ImageDraw.Draw(tmp)
+                    src_img = Image.fromarray(arr_orig)
+                    for r in cover_list:
+                        styles.paint_cover(d2, r, styles.sample_cover_color(src_img, r))
+                    arr = np.array(tmp)
         img2 = Image.fromarray(arr)
         draw = ImageDraw.Draw(img2)
         # 第二遍:写中文(只写有译文的框)
@@ -339,17 +444,39 @@ def main():
                 continue
             x, y, w, h = r['x'], r['y'], r['w'], r['h']
             size = (r.get('size', 20) if r.get('size_fixed') else (r.get('_auto_size') or r.get('size', 20)))
-            # 两个独立开关:
-            #   erase = 是否抹除原文(旧字段 nobox 取反兼容)
-            #   sfx   = 拟声词/艺术字 → 粗体+外框
-            erase = r.get('erase', not r.get('nobox', False))
+            kind = styles.kind_of(r)        # body / plain / title
             st = styles.resolve(r)          # 新:样式预设;旧数据自动兼容
             _v = r.get('_auto_vertical')
-            vertical = _v if isinstance(_v, bool) else bool(r.get('vertical', True))
-            if vertical:
-                ok = draw_vtext(draw, zh, x, y, w, h, size, st)
+            raw_v = r.get('vertical', True)
+            if isinstance(_v, bool):
+                vertical = _v
+            elif isinstance(raw_v, bool):
+                vertical = raw_v
             else:
-                ok = draw_htext(draw, zh, x, y, w, h, size, st)
+                vertical = True          # 'auto' 且没检测出 → 默认竖排
+            if kind == 'title':
+                # 标题:居中 + 加粗 + 自动缩放
+                ok = styles.draw_title(draw, zh, r, size, st)
+            else:
+                # 字号自适应:
+                #   正文 → 超框自动缩小;拟声词 → 自动放大到接近填满框(提升可读性)
+                grow = (kind == 'plain') and AutoSizeOn
+                new_size, bad = fit_size(draw, zh, w, h, size, st, vertical, grow=grow)
+                # 当前方向怎么都放不下 → 试另一方向(竖排↔横排),哪个放得下用哪个
+                if bad:
+                    alt_size, alt_bad = fit_size(draw, zh, w, h, size, st, not vertical, grow=grow)
+                    if not alt_bad or alt_size > new_size:
+                        vertical = not vertical
+                        new_size, bad = alt_size, alt_bad
+                if grow and new_size >= 14:
+                    new_size = max(new_size, 14)
+                size = new_size
+                if bad:
+                    overflow.append((i, zh))
+                if vertical:
+                    ok = draw_vtext(draw, zh, x, y, w, h, size, st)
+                else:
+                    ok = draw_htext(draw, zh, x, y, w, h, size, st)
             if not ok:
                 overflow.append((i, zh))
         if overflow:

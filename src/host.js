@@ -2,10 +2,12 @@
  * Host half of the manga workbench: serves /manga-desk/* routes used by the
  * sidebar panel and runs the local workflow scripts on request.
  */
-import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, statSync, unlinkSync } from 'node:fs'
 import { spawn, execFileSync } from 'node:child_process'
 import path from 'node:path'
 import os from 'node:os'
+import { createServer } from 'node:http'
+import { randomBytes } from 'node:crypto'
 import { deflateSync } from 'node:zlib'
 
 const EXTS = ['.webp', '.png', '.jpg', '.jpeg', '.bmp']
@@ -330,7 +332,7 @@ function imageSizeOf(pythonPath, file) {
   }
 }
 
-export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scriptsDirCfg, toolScriptsDir, runtimeEnv, config, getDirectoryPicker }) {
+export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scriptsDirCfg, toolScriptsDir, runtimeEnv, config, getDirectoryPicker, llm }) {
   const SETUP_HOME = os.homedir()
   const envDirCfg = () => readSetupCfg(SETUP_HOME).envDir
   const _rt0 = resolveRuntime({
@@ -601,6 +603,175 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
     }
   }
 
+  // ---------------- DSH 模型翻译(ctx.llm.stream,免 API Key) ----------------
+  function llmReady() {
+    try {
+      return !!(llm && typeof llm.stream === 'function' && typeof llm.listProviders === 'function')
+    } catch (e) {
+      return false
+    }
+  }
+
+  async function pickDshRoute() {
+    const providers = await llm.listProviders()
+    const rows = []
+    for (const p of providers || []) {
+      let models = []
+      try {
+        models = await llm.listModels(p.id)
+      } catch (e) {
+        models = []
+      }
+      for (const m of models || []) rows.push({ provider: p.id, model: m.id })
+    }
+    if (!rows.length) return null
+    const prefer = rows.find((r) => /deepseek/i.test(r.provider) && /flash/i.test(r.model))
+      || rows.find((r) => /deepseek/i.test(r.provider))
+      || rows[0]
+    return prefer
+  }
+
+  async function llmTranslateTexts(texts, route) {
+    const sys = '你是资深漫画汉化译员。把给的日文台词逐条翻译成简体中文:口语自然、符合角色语气、'
+      + '保留情绪标点、人名统一。只输出一个 JSON 字符串数组,长度与输入一致,不要解释。'
+    let out = ''
+    const stream = llm.stream({
+      provider: route.provider,
+      model: route.model,
+      messages: [
+        { role: 'system', content: [{ type: 'text', text: sys }] },
+        { role: 'user', content: [{ type: 'text', text: JSON.stringify({ texts }, null, 0) }] },
+      ],
+    })
+    for await (const chunk of stream) {
+      if (!chunk) continue
+      if (chunk.type === 'text-delta' && typeof chunk.text === 'string') out += chunk.text
+      else if (chunk.type === 'text' && typeof chunk.text === 'string') out += chunk.text
+    }
+    const t = String(out).trim()
+    let arr = null
+    try {
+      const v = JSON.parse(t.replace(/^```[a-z]*\s*|```$/g, '').trim())
+      if (Array.isArray(v)) arr = v.map(String)
+    } catch (e) { /* 尝试抠数组 */ }
+    if (!arr) {
+      const i = t.indexOf('[')
+      const j = t.lastIndexOf(']')
+      if (i >= 0 && j > i) {
+        try {
+          const v = JSON.parse(t.slice(i, j + 1))
+          if (Array.isArray(v)) arr = v.map(String)
+        } catch (e) { /* ignore */ }
+      }
+    }
+    if (!arr || arr.length !== texts.length) {
+      throw new Error('模型返回格式异常(条数 ' + (arr ? arr.length : '?') + '/' + texts.length + ')')
+    }
+    return arr
+  }
+
+  async function dshTranslateFolder(folder, onlyPage, onData, overwrite) {
+    if (!llmReady()) throw new Error('当前环境没有可用的 DSH 模型接口')
+    const route = await pickDshRoute()
+    if (!route) throw new Error('没有找到可用的 DSH 模型')
+    if (onData) onData(`[DSH 翻译] 使用模型:${route.provider} / ${route.model}\n`)
+    const regions = loadJson(path.join(folder, 'regions.json'))
+    const ocr = loadJson(path.join(folder, 'ocr_text.json'))
+    const transFile = path.join(folder, 'trans.json')
+    const trans = loadJson(transFile)
+    const pages = onlyPage ? [onlyPage] : Object.keys(regions).filter((p) => (regions[p] || []).length)
+    let done = 0
+    for (const page of pages) {
+      const texts = ocr[page] || []
+      const boxes = regions[page] || []
+      const row = Array.isArray(trans[page]) ? trans[page].slice() : []
+      while (row.length < boxes.length) row.push('')
+      const todo = []
+      for (let i = 0; i < boxes.length; i++) {
+        if (i >= texts.length || !String(texts[i] || '').trim()) continue
+        if (overwrite === false) {
+          if (!String(row[i] || '').trim()) todo.push(i)
+        } else {
+          todo.push(i)
+        }
+      }
+      if (todo.length) {
+        try {
+          const zh = await llmTranslateTexts(todo.map((i) => String(texts[i])), route)
+          todo.forEach((i, k) => { row[i] = zh[k] })
+          done += todo.length
+          if (onData) onData(`[DSH 翻译] ${page}: ${todo.length} 条完成\n`)
+        } catch (e) {
+          if (onData) onData(`[DSH 翻译] ${page} 失败:${String((e && e.message) || e)}\n`)
+        }
+      }
+      trans[page] = row
+    }
+    try {
+      writeFileSync(transFile, JSON.stringify(trans, null, 1), 'utf8')
+    } catch (e) {
+      throw new Error('写入 trans.json 失败:' + String((e && e.message) || e))
+    }
+    return done
+  }
+
+  // ---------------- 本机 DSH 翻译桥(桌面端 → host → ctx.llm) ----------------
+  const BRIDGE_FILE = path.join(os.homedir(), '.manga-workflow', 'host.json')
+  let _bridge = null
+
+  function startDshBridge() {
+    if (!llmReady() || _bridge) return _bridge
+    const token = randomBytes(16).toString('hex')
+    const server = createServer((req, res) => {
+      const send = (code, obj) => {
+        try {
+          res.writeHead(code, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify(obj))
+        } catch (e) { /* ignore */ }
+      }
+      if (req.method === 'GET' && req.url && req.url.startsWith('/ping')) {
+        return send(200, { ok: true, llm: llmReady() })
+      }
+      if (req.headers['x-manga-token'] !== token) return send(403, { error: 'bad token' })
+      if (req.method === 'POST' && req.url && req.url.startsWith('/translate-dsh')) {
+        let raw = ''
+        req.on('data', (d) => { raw += d })
+        req.on('end', async () => {
+          let body = {}
+          try { body = JSON.parse(raw || '{}') } catch {}
+          const dir = body.folder
+          if (!dir || !existsSync(dir)) return send(400, { error: '文件夹不存在' })
+          try {
+            const n = await dshTranslateFolder(dir, body.page || null, () => {}, body.overwrite !== false)
+            return send(200, { ok: true, done: n })
+          } catch (e) {
+            return send(500, { ok: false, error: String((e && e.message) || e) })
+          }
+        })
+        return
+      }
+      send(404, { error: 'not found' })
+    })
+    server.on('error', () => { /* 起不来就放弃 */ })
+    server.listen(0, '127.0.0.1', () => {
+      try {
+        const port = server.address().port
+        mkdirSync(path.dirname(BRIDGE_FILE), { recursive: true })
+        writeFileSync(BRIDGE_FILE, JSON.stringify({ port, token, pid: process.pid }), 'utf8')
+      } catch (e) { /* ignore */ }
+    })
+    _bridge = server
+    return _bridge
+  }
+
+  function stopDshBridge() {
+    try {
+      if (_bridge) _bridge.close()
+    } catch (e) { /* ignore */ }
+    _bridge = null
+    try { if (existsSync(BRIDGE_FILE)) unlinkSync(BRIDGE_FILE) } catch (e) { /* ignore */ }
+  }
+
   async function runStep(folder, step, onData) {
     const env = { ...runtimeEnv, MANGA_ENV_DIR: envDirCfg() }
     let args = null
@@ -608,9 +779,36 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
     if (step === 'ocr') {
       args = [scriptPath('ocr_regions.py'), folder, '--lang', config.lang || 'ja']
     } else if (step === 'translate') {
-      const engines = config.engines || 'google,mymemory'
-      args = [scriptPath('translate.py'), folder, '--engines', engines, '--from', config.lang || 'ja']
-      if (config.proxy) args.push('--proxy', config.proxy)
+      // 按优先级选引擎:DSH 模型 / AI(高)> 免费(低)
+      const tcfg0 = readTransCfg()
+      const picked0 = Array.isArray(tcfg0.engines) && tcfg0.engines.length
+        ? tcfg0.engines : ['ai', 'google', 'mymemory']
+      if (picked0.includes('dsh') && llmReady()) {
+        try {
+          const n = await dshTranslateFolder(folder, null, onData, tcfg0.overwrite !== false)
+          return { code: 0, out: `[DSH 翻译] 完成 ${n} 条\n`, err: '', label }
+        } catch (e) {
+          if (onData) onData(`[DSH 翻译] 失败,回退其它引擎:${String((e && e.message) || e)}\n`)
+        }
+      }
+      const tcfg = readTransCfg()
+      const dftAi = aiDefaults()
+      const ai = { ...dftAi, ...(tcfg.ai || {}) }
+      const aiReady = !!(ai.baseUrl && ai.apiKey && ai.model)
+      const picked = (Array.isArray(tcfg.engines) && tcfg.engines.length)
+        ? tcfg.engines : ['ai', 'google', 'mymemory']
+      const freePicked = picked.filter((e) => e === 'google' || e === 'mymemory')
+      let eng = []
+      if (aiReady && picked.includes('ai')) eng.push('ai')
+      if (freePicked.length) eng = eng.concat(freePicked)
+      if (!eng.length) eng = freePicked.length ? freePicked : ['google', 'mymemory']
+      if (picked.includes('dsh') && onData) {
+        onData(String.fromCharCode(10) + '[提示] 「交给 DSH 会话翻译」仅在桌面端可用,网页端自动改用 AI/免费引擎' + String.fromCharCode(10))
+      }
+      args = [scriptPath('translate.py'), folder, '--engines', eng.join(','),
+              '--from', config.lang || 'ja']
+      if (tcfg.overwrite !== false) args.push('--overwrite')
+      if (tcfg.proxy) args.push('--proxy', tcfg.proxy)
     } else if (step === 'proofread') {
       args = [scriptPath('proofread.py'), folder, '--stage', 'pre', '--mode', config.proofMode || 'both']
     } else if (step === 'embed') {
@@ -651,6 +849,13 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
     }
     return { code, out, err, label }
   }
+
+  // 启动本机 DSH 翻译桥(供桌面端调用;只有插件 host 在 DSH 内运行时才有 llm)
+  try { startDshBridge() } catch (e) { /* 忽略 */ }
+  // 暴露给 index.js,便于 dispose 时关闭
+  try {
+    Object.defineProperty(desk, 'stopDshBridge', { value: stopDshBridge })
+  } catch (e) { /* ignore */ }
 
   async function handle(req, res, url) {
     const folder = url.searchParams.get('folder') || ''
@@ -929,6 +1134,157 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
         })
         .catch((e) => { job.status = 'error'; job.log += '\n' + String((e && e.message) || e) })
       return json(res, 200, { ok: true, jobId: id, tier })
+    }
+
+  // ---------- 文字翻译引擎配置(双端共享 ~/.manga-workflow/trans.json) ----------
+  const TRANS_CFG_FILE = path.join(os.homedir(), '.manga-workflow', 'trans.json')
+
+  function readTransCfg() {
+    const d = { engines: ['ai'], proxy: '', ai: {}, overwrite: true }
+    try {
+      const j = JSON.parse(readFileSync(TRANS_CFG_FILE, 'utf8'))
+      if (Array.isArray(j.engines) && j.engines.length) d.engines = j.engines
+      if (typeof j.proxy === 'string') d.proxy = j.proxy
+      if (typeof j.overwrite === 'boolean') d.overwrite = j.overwrite
+      if (j.ai && typeof j.ai === 'object') d.ai = j.ai
+    } catch (e) { /* 默认值 */ }
+    return d
+  }
+
+  function writeTransCfg(patch) {
+    const cur = readTransCfg()
+    const next = { ...cur }
+    if (Array.isArray(patch.engines) && patch.engines.length) next.engines = patch.engines
+    if (typeof patch.proxy === 'string') next.proxy = patch.proxy
+    if (typeof patch.overwrite === 'boolean') next.overwrite = patch.overwrite
+    const ai = { ...(cur.ai || {}), ...(patch.ai || {}) }
+    for (const k of Object.keys(ai)) {
+      if (ai[k] === undefined || ai[k] === null) delete ai[k]
+    }
+    next.ai = ai
+    try {
+      mkdirSync(path.dirname(TRANS_CFG_FILE), { recursive: true })
+      writeFileSync(TRANS_CFG_FILE, JSON.stringify(next, null, 2), 'utf8')
+    } catch (e) { /* 忽略 */ }
+    return next
+  }
+
+  // 从已配置的视觉引擎补默认 AI 翻译配置
+  function aiDefaults() {
+    try {
+      const cfg = JSON.parse(readFileSync(path.join(os.homedir(), '.modlens', 'config.json'), 'utf8'))
+      const pv = (cfg.providers || {}).openai || {}
+      return { baseUrl: pv.baseUrl || '', model: pv.model || '', apiKey: pv.apiKey || '' }
+    } catch (e) {
+      return { baseUrl: '', model: '', apiKey: '' }
+    }
+  }
+
+  function maskKey(k) {
+    if (!k) return ''
+    return k.length <= 8 ? '****' : k.slice(0, 4) + '****' + k.slice(-4)
+  }
+
+  async function testAiTrans(baseUrl, model, apiKey) {
+    const t0 = Date.now()
+    try {
+      const url = String(baseUrl || '').replace(/\/+$/, '') + '/chat/completions'
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { Authorization: 'Bearer ' + apiKey } : {}),
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: '把日文翻译成简体中文,只输出译文。' },
+            { role: 'user', content: 'これはテストです。' },
+          ],
+          max_tokens: 300,
+          stream: false,
+        }),
+      })
+      const ms = Date.now() - t0
+      const text = await r.text()
+      if (!r.ok) return { ok: false, message: `HTTP ${r.status} ${text.slice(0, 200)}` }
+      let reply = ''
+      try {
+        const j = JSON.parse(text)
+        const msg = ((j.choices || [{}])[0].message) || {}
+        reply = msg.content || msg.reasoning_content || ''
+      } catch (e) { /* ignore */ }
+      const isZh = /[\u4e00-\u9fff]/.test(reply)
+      return {
+        ok: isZh, ms, reply: String(reply).slice(0, 60),
+        message: isZh ? `翻译接口可用 ✅ ${ms}ms` : `接口通了但返回不是中文 ⚠️ ${String(reply).slice(0, 40)}`,
+      }
+    } catch (e) {
+      return { ok: false, message: String((e && e.message) || e) }
+    }
+  }
+
+    // DSH 模型翻译(免 Key):POST {folder, page?} → jobId,用 /job 轮询
+    if (name === 'translate-dsh' && req.method === 'POST') {
+      const raw = await readBody(req)
+      let body = {}
+      try { body = JSON.parse(raw || '{}') } catch {}
+      const dir = body.folder || folder
+      if (!dir || !existsSync(dir)) return json(res, 400, { error: '文件夹不存在' })
+      const id = 'd' + Date.now().toString(36)
+      const job = { id, step: 'translate-dsh', folder: dir, status: 'running', code: null,
+                    log: '', started: Date.now() }
+      jobs.set(id, job)
+      dshTranslateFolder(dir, body.page || null, (t) => { job.log += t }, body.overwrite !== false)
+        .then((n) => { job.status = 'done'; job.code = 0; job.log += `\n[完成] 共 ${n} 条\n` })
+        .catch((e) => { job.status = 'error'; job.code = 1; job.log += '\n[失败] ' + String((e && e.message) || e) })
+      return json(res, 200, { ok: true, jobId: id })
+    }
+
+    // 文字翻译引擎配置(双端共享):GET 读取 / POST 保存 / trans-test 测试接口
+    if (name === 'trans') {
+      const cfg = readTransCfg()
+      if (req.method === 'POST') {
+        const raw = await readBody(req)
+        let body = {}
+        try { body = JSON.parse(raw || '{}') } catch {}
+        const next = writeTransCfg({
+          engines: Array.isArray(body.engines) ? body.engines : undefined,
+          proxy: typeof body.proxy === 'string' ? body.proxy : undefined,
+          overwrite: typeof body.overwrite === 'boolean' ? body.overwrite : undefined,
+          ai: (body.ai && typeof body.ai === 'object') ? body.ai : undefined,
+        })
+        return json(res, 200, {
+          ok: true, engines: next.engines, proxy: next.proxy,
+          ai: { baseUrl: next.ai.baseUrl || '', model: next.ai.model || '',
+                hasKey: !!next.ai.apiKey, keyMask: maskKey(next.ai.apiKey) },
+        })
+      }
+      const dft = aiDefaults()
+      return json(res, 200, {
+        engines: cfg.engines, proxy: cfg.proxy, overwrite: cfg.overwrite !== false,
+        ai: {
+          baseUrl: cfg.ai.baseUrl || dft.baseUrl, model: cfg.ai.model || dft.model,
+          hasKey: !!(cfg.ai.apiKey || dft.apiKey), keyMask: maskKey(cfg.ai.apiKey || dft.apiKey),
+        },
+        defaults: { baseUrl: dft.baseUrl || '', model: dft.model || '',
+                    hasKey: !!dft.apiKey, keyMask: maskKey(dft.apiKey) },
+        file: TRANS_CFG_FILE,
+      })
+    }
+
+    if (name === 'trans-test' && req.method === 'POST') {
+      const raw = await readBody(req)
+      let body = {}
+      try { body = JSON.parse(raw || '{}') } catch {}
+      const cur = readTransCfg()
+      const dft = aiDefaults()
+      const baseUrl = String(body.baseUrl || cur.ai.baseUrl || dft.baseUrl || '').trim()
+      const model = String(body.model || cur.ai.model || dft.model || '').trim()
+      const apiKey = String(body.apiKey || cur.ai.apiKey || dft.apiKey || '').trim()
+      if (!baseUrl || !model) return json(res, 400, { ok: false, message: '缺少接口地址或模型名' })
+      const r = await testAiTrans(baseUrl, model, apiKey)
+      return json(res, 200, r)
     }
 
     // 文字样式预设(styles.json,与桌面端/嵌字渲染共用)

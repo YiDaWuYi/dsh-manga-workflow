@@ -38,21 +38,37 @@ class MarkTool:
         self.idx = 0
         self.regions = self._load(regions_file)
         self._snapshot()
-        self.vertical = tk.BooleanVar(value=True)
-        self.mode = tk.StringVar(value="box")  # box / paint
-        self.size = tk.StringVar(value="20")   # 字号(新框默认,可选 10/20/30/50/60 或手动输入)
-        self.erase = tk.BooleanVar(value=True)        # 抹除原文(不勾=只叠字,不擦原文)
-        self.sfx = tk.BooleanVar(value=False)         # 拟声词/艺术字(粗体+外框)
-        # 可视化文字样式(见 styles.json):正文 / 拟声词各一组
+        self.mode = tk.StringVar(value="box")     # 前置:框选 / 涂抹
+        self.kind = tk.StringVar(value="body")    # 类型:正文 / 无框正文·拟声词 / 标题
+        self.cover = tk.StringVar(value="cover")  # 原文处理:overlay直盖 / erase抹除 / cover色块覆盖
+        self.gpu = tk.BooleanVar(value=self._cfg_lama(regions_file))  # 「抹除」时是否用 GPU(LaMa)
+        self.dir_mode = tk.StringVar(value="auto")  # 方向:自动检测 / 横排 / 竖排
+        self.vertical = tk.BooleanVar(value=True)  # 兼容旧代码(非 auto 时同步)
+        self.size = tk.StringVar(value="20")       # 字号(新框默认)
+        self.erase = tk.BooleanVar(value=True)     # 兼容旧代码(=cover=='erase')
+        self.sfx = tk.BooleanVar(value=False)      # 兼容旧代码(=kind=='plain')
+        # 可视化文字样式:正文 / 拟声 / 标题 三组
         self.body_style_id = tk.StringVar(value=styles.DEFAULT_BODY)
         self.sfx_style_id = tk.StringVar(value=styles.DEFAULT_SFX)
-        self._style_btns = {'body': {}, 'sfx': {}}
+        self.title_style_id = tk.StringVar(value=styles.DEFAULT_TITLE)
+        self._style_btns = {'body': {}, 'sfx': {}, 'title': {}}
+        # 每组的字体(空=默认字体),可同步预览
+        self.body_font = tk.StringVar(value='')
+        self.sfx_font = tk.StringVar(value='')
+        self.title_font = tk.StringVar(value='')
+        self._font_combo = {}
+        # 软件内记忆:每种类型各自记住「原文处理」和「GPU」选择
+        self._cover_mem = {'body': 'cover', 'plain': 'erase', 'title': 'cover'}
+        self._gpu_mem = {'body': False, 'plain': False, 'title': False}
+        self._undo_stack = []
+        self._sel = None          # 当前选中的框下标(点选框后可实时改设置)
+        self._syncing = False     # 防止设置变量联动时递归
         self.auto_size = tk.BooleanVar(value=True)    # 嵌字时自动检测原文字号
         self.auto_dir = tk.BooleanVar(value=True)     # 嵌字时自动检测横竖
         self.use_lama = tk.BooleanVar(value=self._cfg_lama(regions_file))  # 嵌字时用 GPU(LaMa)去字
         self.lang = tk.StringVar(value=self._cfg_val(regions_file, 'lang', 'ja'))  # 原文语言 ja/ko
         self.scope = tk.StringVar(value="page")   # 处理范围:page=当前页 / book=整本
-        self.bubble_only = tk.BooleanVar(value=False)  # 自动标框:只标气泡内文字(默认关:覆盖率高,宁可多标)
+        self.detect_mode = tk.StringVar(value='all')   # 自动标框:all=全部(自动区分) / bubble=只标气泡 / sfx=只标拟声词
         self.proof_mode = tk.StringVar(value="原文+译文")   # 校对模式:原文+译文 / 只校原文
         self.trans_cfg = _load_trans_cfg()             # 翻译设置:引擎列表 + 代理
         self.page_boxes = []       # 当前页已画的框(原始坐标)
@@ -77,6 +93,7 @@ class MarkTool:
 
         self._build_ui()
         self._load_page()
+        pass
         self.root.after(80, self.refresh)   # 窗口真正显示后再适配一次尺寸
 
     # ---------- 基础 ----------
@@ -149,14 +166,16 @@ class MarkTool:
         # 按页合并:只覆盖本端改过的页,其它页保留磁盘上的(可能是网页端刚改的)
         merged = self._merge_save(self.regions_file, self.regions,
                                   getattr(self, '_base_regions', self.regions))
-        json.dump(merged, open(self.regions_file, 'w', encoding='utf-8'),
-                  ensure_ascii=False, indent=1)
+        with open(self.regions_file, 'w', encoding='utf-8') as f:
+            json.dump(merged, f, ensure_ascii=False, indent=1)
         self.regions = merged
         # 顺便记录设置(GPU去字开关)
         try:
             cfg_path = os.path.join(os.path.dirname(self.regions_file), 'config.json')
-            json.dump({'lama': bool(self.use_lama.get()), 'lang': self.lang.get(),
-                       'auto_size': bool(self.auto_size.get()), 'auto_dir': bool(self.auto_dir.get())},
+            _has_gpu = any(styles.gpu_of(x) for arr in self.regions.values() for x in arr)
+            json.dump({'lama': bool(_has_gpu), 'lang': self.lang.get(),
+                       'auto_size': bool(self.auto_size.get()),
+                       'auto_dir': (self.dir_mode.get() == 'auto')},
                       open(cfg_path, 'w', encoding='utf-8'))
         except Exception:
             pass
@@ -182,55 +201,97 @@ class MarkTool:
         tk.Button(top, text="保存", command=self.save_btn).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="自动识别(OCR)", command=self.run_ocr).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="自动标框", command=self.auto_detect).pack(side=tk.LEFT, padx=4)
+        ttk.Combobox(top, textvariable=self.detect_mode, width=11, state='readonly',
+                     values=['全部(自动区分)', '只标气泡', '只标拟声词']).pack(side=tk.LEFT, padx=(2, 0))
         tk.Button(top, text="刷新", command=self.refresh).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="一键识别(整本:标框+OCR)", command=self.one_click).pack(side=tk.LEFT, padx=4)
+        tk.Button(top, text="全自动(OCR→翻译→校对→嵌字)",
+                  command=self.auto_all).pack(side=tk.LEFT, padx=(4, 0))
         tk.Button(top, text="重标同步", command=self.resync).pack(side=tk.LEFT, padx=(4, 0))
-        tk.Button(top, text="校对(嵌字前)", command=self.proofread_pre).pack(side=tk.LEFT, padx=4)
-        ttk.Combobox(top, textvariable=self.proof_mode, values=["原文+译文", "只校原文"],
-                     width=10, state='readonly').pack(side=tk.LEFT)
         tk.Button(top, text="翻译", command=self.translate_text).pack(side=tk.LEFT, padx=(4, 0))
-        tk.Button(top, text="翻译设置", command=self.translate_settings).pack(side=tk.LEFT, padx=(2, 0))
-        tk.Button(top, text="帮助", command=self.show_help).pack(side=tk.LEFT, padx=(2, 0))
-        tk.Button(top, text="设置", command=lambda: _show_settings(self.root, self.src_dir)).pack(side=tk.LEFT, padx=(2, 0))
-        tk.Button(top, text="取消当前任务", command=self.cancel_job).pack(side=tk.LEFT, padx=(6, 0))
+        tk.Button(top, text="校对(嵌字前)", command=self.proofread_pre).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Combobox(top, textvariable=self.proof_mode, values=["原文+译文", "只校原文"],
+                     width=9, state='readonly').pack(side=tk.LEFT, padx=(2, 0))
+        mb = tk.Menubutton(top, text="更多 ▾", relief=tk.RAISED)
+        menu = tk.Menu(mb, tearoff=0)
+        menu.add_command(label="翻译设置", command=self.translate_settings)
+        menu.add_command(label="设置", command=lambda: _show_settings(self.root, self.src_dir))
+        menu.add_command(label="帮助", command=self.show_help)
+        mb.config(menu=menu)
+        mb.pack(side=tk.LEFT, padx=(6, 0))
+        tk.Button(top, text="取消当前任务", command=self.cancel_job
+                  ).pack(side=tk.LEFT, padx=(6, 0))
         tk.Label(top, text="范围:").pack(side=tk.LEFT, padx=(8, 0))
         tk.Radiobutton(top, text="当前页", variable=self.scope, value="page").pack(side=tk.LEFT)
         tk.Radiobutton(top, text="整本", variable=self.scope, value="book").pack(side=tk.LEFT)
-        tk.Checkbutton(top, text="自动标框只标气泡", variable=self.bubble_only).pack(side=tk.LEFT, padx=(10, 0))
-        self.status = tk.Label(top, text="")
-        self.status.pack(side=tk.RIGHT)
+        
+        # 底部常驻状态栏:页码/文件名/框数 + 当前任务进度(始终可见)
+        bottom = tk.Frame(self.root)
+        bottom.pack(side=tk.BOTTOM, fill=tk.X)
+        self.pageinfo = tk.Label(bottom, text="", anchor="w", fg="#666")
+        self.pageinfo.pack(side=tk.LEFT, padx=6, pady=(0, 2))
+        self.status = tk.Label(bottom, text="", anchor="e", fg="#333")
+        self.status.pack(side=tk.RIGHT, padx=6, pady=(0, 2))
 
         # 第二行:标注设置
         top2 = tk.Frame(self.root)
         top2.pack(side=tk.TOP, fill=tk.X, padx=4, pady=(0, 4))
+        tk.Label(top2, text="模式:", fg='#2a5d8f').pack(side=tk.LEFT)
         tk.Radiobutton(top2, text="框选(B)", variable=self.mode, value="box").pack(side=tk.LEFT)
-        tk.Radiobutton(top2, text="涂抹(P)", variable=self.mode, value="paint").pack(side=tk.LEFT, padx=(0, 8))
-        tk.Radiobutton(top2, text="竖排(V)", variable=self.vertical, value=True).pack(side=tk.LEFT)
-        tk.Radiobutton(top2, text="横排(H)", variable=self.vertical, value=False).pack(side=tk.LEFT, padx=(0, 8))
-        tk.Label(top2, text="字号:").pack(side=tk.LEFT)
+        tk.Radiobutton(top2, text="自由框选(P)", variable=self.mode, value="paint").pack(side=tk.LEFT, padx=(0, 10))
+
+        tk.Label(top2, text="类型:", fg='#2a5d8f').pack(side=tk.LEFT)
+        for _v, _t in (('body', '正文'), ('plain', '无框正文/拟声词'), ('title', '标题')):
+            tk.Radiobutton(top2, text=_t, variable=self.kind, value=_v,
+                           command=self._on_kind_change).pack(side=tk.LEFT)
+        self._cover_frame = tk.Frame(top2)
+        self._cover_frame.pack(side=tk.LEFT, padx=(6, 10))
+        self._on_kind_change()
+
+        tk.Label(top2, text="字号:", fg='#2a5d8f').pack(side=tk.LEFT)
         ttk.Combobox(top2, textvariable=self.size, values=[str(i) for i in range(10, 81, 10)],
                      width=4).pack(side=tk.LEFT)
-        tk.Checkbutton(top2, text="拟声词(N)", variable=self.sfx).pack(side=tk.LEFT, padx=(8, 0))
-        tk.Checkbutton(top2, text="抹除原文(E)", variable=self.erase).pack(side=tk.LEFT, padx=(4, 0))
-        tk.Checkbutton(top2, text="自动字号", variable=self.auto_size).pack(side=tk.LEFT, padx=(8,0))
-        tk.Checkbutton(top2, text="自动横竖", variable=self.auto_dir).pack(side=tk.LEFT, padx=(4,0))
-        tk.Checkbutton(top2, text="GPU去字", variable=self.use_lama).pack(side=tk.LEFT, padx=8)
+        tk.Checkbutton(top2, text="自动字号", variable=self.auto_size).pack(side=tk.LEFT, padx=(2, 10))
+
+        tk.Label(top2, text="方向:", fg='#2a5d8f').pack(side=tk.LEFT)
+        for _v, _t in (('auto', '自动检测'), ('v', '竖排'), ('h', '横排')):
+            tk.Radiobutton(top2, text=_t, variable=self.dir_mode, value=_v).pack(side=tk.LEFT)
+        tk.Button(top2, text="样式 ▾", width=7, command=self._toggle_style_bar
+                  ).pack(side=tk.LEFT, padx=(6, 0))
         tk.Label(top2, text="语言:").pack(side=tk.LEFT)
         tk.Radiobutton(top2, text="日", variable=self.lang, value="ja").pack(side=tk.LEFT)
         tk.Radiobutton(top2, text="韩", variable=self.lang, value="ko").pack(side=tk.LEFT)
         tk.Radiobutton(top2, text="英", variable=self.lang, value="en").pack(side=tk.LEFT)
 
         # 可视化样式库(一行小图:直接看到渲染效果)
-        style_bar = tk.Frame(self.root)
-        style_bar.pack(side=tk.TOP, fill=tk.X, padx=6, pady=(2, 0))
+        self._style_box = tk.Frame(self.root)
+        self._style_box.pack(side=tk.TOP, fill=tk.X, padx=6, pady=(2, 0))
+        style_bar = self._style_box
         self._build_style_group(style_bar, 'body', '正文')
         self._build_style_group(style_bar, 'sfx', '拟声')
+        self._build_style_group(style_bar, 'title', '标题')
         tk.Button(style_bar, text='应用到本页', width=9, command=self.apply_style_page
                   ).pack(side=tk.LEFT, padx=(4, 0))
+        tk.Button(style_bar, text='应用到全部', width=9, command=self.apply_style_all
+                  ).pack(side=tk.LEFT, padx=(2, 0))
+        self._style_visible = True
         self._refresh_style_buttons()
 
-        tk.Label(self.root, text="操作: 左键拖框/涂抹 · 右键删框 · 双击改原文和译文 · N=拟声词/艺术字 · E=抹除原文 · F5 刷新 · 样式按钮点一下即选中 · 一键识别=整本",
-                 fg="#888", anchor="w").pack(side=tk.TOP, fill=tk.X, padx=6)
+        # 选中框时:改工具栏设置 → 立即写回该框
+        for _v in (self.kind, self.cover, self.dir_mode, self.size):
+            try:
+                _v.trace_add('write', lambda *a: self._apply_current_to_sel())
+            except Exception:
+                pass
+        try:
+            self.gpu.trace_add('write', lambda *a: self._apply_current_to_sel())
+            self.gpu.trace_add('write', self._remember_gpu)
+        except Exception:
+            pass
+
+        self._hint_label = tk.Label(self.root, text="操作: 左键拖框/自由框选 · 单击框=选中(改设置实时写回) · 右键删框 · 双击改原文和译文 · 1/2/3=类型 · E=原文处理 · G=GPU · T=翻译 · O=识别 · F5 刷新 · 一键识别=整本",
+                 fg="#888", anchor="w")
+        self._hint_label.pack(side=tk.TOP, fill=tk.X, padx=6)
 
         self.canvas = tk.Canvas(self.root, bg="#333", cursor="crosshair")
         self.canvas.pack(fill=tk.BOTH, expand=True)
@@ -246,12 +307,16 @@ class MarkTool:
         self.root.bind("<Right>", lambda e: self.next_page())
         self.root.bind("<Control-z>", lambda e: self.undo())
         self.root.bind("<Control-s>", lambda e: self.save_btn())
-        self.root.bind("b", lambda e: self.mode.set("box"))
-        self.root.bind("p", lambda e: self.mode.set("paint"))
-        self.root.bind("v", lambda e: self.vertical.set(True))
-        self.root.bind("h", lambda e: self.vertical.set(False))
-        self.root.bind("n", lambda e: self.sfx.set(not self.sfx.get()))      # N=切换拟声词/艺术字
-        self.root.bind("e", lambda e: self.erase.set(not self.erase.get()))  # E=切换抹除原文
+        # 快捷键(焦点在输入框/下拉时自动忽略)
+        self.root.bind("b", lambda e: self._key('mode_box'))
+        self.root.bind("p", lambda e: self._key('mode_paint'))
+        self.root.bind("1", lambda e: self._key('kind_body'))
+        self.root.bind("2", lambda e: self._key('kind_plain'))
+        self.root.bind("3", lambda e: self._key('kind_title'))
+        self.root.bind("e", lambda e: self._key('cover_cycle'))
+        self.root.bind("g", lambda e: self._key('gpu_toggle'))
+        self.root.bind("t", lambda e: self._key('translate'))
+        self.root.bind("o", lambda e: self._key('ocr'))
 
     # ---------- 页面 ----------
     def _load_page(self):
@@ -289,21 +354,28 @@ class MarkTool:
         texts = self.box_text.get(self._page_key(), [])
         trans = self.trans.get(self._page_key(), [])
         for idx, b in enumerate(self.page_boxes):
-            is_sfx = bool(b.get('sfx'))
-            box_color = "#ff4d4d" if is_sfx else "#00ff00"   # 拟声词=红,正文=绿
-            self._draw_box(b, outline=box_color, width=2 if not is_sfx else 3)
-            # 框内左上角:类型标签
+            kind = styles.kind_of(b)
+            if kind == 'title':
+                box_color, label, bg, lw, dash, tint = "#4da6ff", "◆标题", "#123a5c", 3, None, "#4da6ff"
+            elif kind == 'plain':
+                box_color, label, bg, lw, dash, tint = "#ff2020", "◈拟声", "#5a1a1a", 3, (7, 4), "#ff2020"
+            else:
+                box_color, label, bg, lw, dash, tint = "#00e000", "●正文", "#0f3d0f", 3, None, "#00e000"
+            if self._sel == idx:
+                self._draw_box(b, outline="#ffff00", width=5)
+            self._draw_box(b, outline=box_color, width=lw, dash=dash, tint=tint)
+            # 框外标注:左上=类型(正文/拟声/标题),右上=原文处理(直盖/抹除/覆盖,抹除标注是否 GPU)
             bx0 = b['x'] * self._scale
             by0 = b['y'] * self._scale
-            label = "拟声" if is_sfx else "正文"
-            bg = "#5a1a1a" if is_sfx else "#0f3d0f"
-            _t = self.canvas.create_text(bx0 + 3, by0 + 2, anchor=tk.NW, text=label,
-                                         fill=box_color, font=("Microsoft YaHei", 9, "bold"))
-            _bb = self.canvas.bbox(_t)
-            if _bb:
-                _r = self.canvas.create_rectangle(_bb[0] - 1, _bb[1] - 1, _bb[2] + 1, _bb[3] + 1,
-                                                  fill=bg, outline="")
-                self.canvas.tag_lower(_r, _t)
+            bx1 = (b['x'] + b['w']) * self._scale
+            ly = max(1, by0 - 13)          # 放到框上方外侧
+            cm = styles.cover_mode(b)
+            proc = styles.COVER_LABEL.get(cm, cm)
+            if cm == 'erase':
+                proc += '·GPU' if styles.gpu_of(b) else '·普通'
+            self._label_outside(bx0, ly, label, box_color, 'w', bg)
+            self._label_outside(bx1, ly, proc, '#00e5ff' if cm == 'overlay' else
+                                ('#ffb020' if cm == 'cover' else '#ff8080'), 'e', '#2a2a2a')
             orig = texts[idx] if idx < len(texts) else ''
             tl = trans[idx] if idx < len(trans) else ''
             x1 = (b['x'] + b['w']) * self._scale
@@ -323,14 +395,40 @@ class MarkTool:
                 r = 4
                 self.canvas.create_oval(x-r, y-r, x+r, y+r, fill="#ffff00", outline="")
         n = len(self.page_boxes)
-        extra = "  ⚠本页无标框,按 → 翻页" if n == 0 else ""
-        self.status.config(
-            text=f"{self.idx+1}/{len(self.pages)}  {self.pages[self.idx]}  框数:{n}{extra}")
+        try:
+            setattr(self, '_last_task', '')
+            trans = self.trans.get(self._page_key(), [])
+            done = sum(1 for x in trans[:n] if str(x).strip())
+            self.pageinfo.config(
+                text='第 %d/%d 页 · %s · 框 %d · 已译 %d' % (
+                    self.idx + 1, len(self.pages), self.pages[self.idx], n, done))
+        except Exception:
+            pass
 
-    def _draw_box(self, b, outline, width=2):
+    def _label_outside(self, x, y, text, color, anchor, bg):
+        """框外侧的小标签(带底色,保证在画面上看得清)。"""
+        try:
+            _t = self.canvas.create_text(x, y, anchor=(tk.NW if anchor == 'w' else tk.NE),
+                                         text=text, fill=color,
+                                         font=("Microsoft YaHei", 9, "bold"))
+            _bb = self.canvas.bbox(_t)
+            if _bb:
+                _r = self.canvas.create_rectangle(_bb[0] - 2, _bb[1] - 1, _bb[2] + 2, _bb[3] + 1,
+                                                  fill=bg, outline="")
+                self.canvas.tag_lower(_r, _t)
+        except Exception:
+            pass
+
+    def _draw_box(self, b, outline, width=2, dash=None, tint=None):
         x0, y0 = b["x"] * self._scale, b["y"] * self._scale
         x1, y1 = (b["x"] + b["w"]) * self._scale, (b["y"] + b["h"]) * self._scale
-        self.canvas.create_rectangle(x0, y0, x1, y1, outline=outline, width=width)
+        kw = {'outline': outline, 'width': width}
+        if dash:
+            kw['dash'] = dash
+        if tint:
+            kw['fill'] = tint
+            kw['stipple'] = 'gray12'
+        self.canvas.create_rectangle(x0, y0, x1, y1, **kw)
 
     # ---------- 刷新 ----------
     def refresh(self):
@@ -354,6 +452,7 @@ class MarkTool:
 
     # ---------- 鼠标 ----------
     def on_down(self, e):
+        self._down_at = (e.x, e.y)     # 用来区分「点选」还是「拖框」
         if self.mode.get() == "box":
             self._drag = (e.x, e.y, e.x, e.y)
         else:
@@ -369,10 +468,21 @@ class MarkTool:
         self._redraw()
 
     def on_up(self, e):
+        if getattr(self, '_dbl', False):
+            # 双击(改字/选框)时抬手不建框,避免误标新框
+            self._drag = None
+            self._paint_pts = []
+            return
+        d0 = getattr(self, '_down_at', None)
         if self.mode.get() == "box":
             if self._drag:
                 x0, y0, x1, y1 = self._drag
                 self._drag = None
+                # 几乎没移动 → 视为「点选」:选中该框,方便改设置
+                if abs(x1 - x0) <= 3 and abs(y1 - y0) <= 3:
+                    self._select_at(d0[0] if d0 else e.x, d0[1] if d0 else e.y)
+                    self._redraw()
+                    return
                 if abs(x1 - x0) > 3 and abs(y1 - y0) > 3:
                     self._add_box(min(x0, x1), min(y0, y1), abs(x1 - x0), abs(y1 - y0))
         else:
@@ -380,21 +490,20 @@ class MarkTool:
             self._paint_pts = []
             if pts:
                 xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
-                _sid = self._box_style()
-                _sf = self._style_fields(_sid)
-                b = {
+                if (max(xs) - min(xs)) < 4 and (max(ys) - min(ys)) < 4:
+                    # 只是点了一下,不建零尺寸框
+                    self._redraw()
+                    return
+                self._push_undo()
+                b = self._new_box_fields()
+                b.update({
                     "x": round(min(xs) / self._scale),
                     "y": round(min(ys) / self._scale),
                     "w": round((max(xs) - min(xs)) / self._scale),
                     "h": round((max(ys) - min(ys)) / self._scale),
-                    "vertical": bool(self.vertical.get()),
-                    "size": self._size_val(),
-                    "erase": bool(self.erase.get()),
-                    "sfx": bool(self.sfx.get()),
-                    "style": _sf['style'], "color": _sf['color'], "outline": _sf['outline'],
                     # 涂抹模式:存原始笔画点,擦除时用自由形状遮罩
                     "points": [[round(x / self._scale), round(y / self._scale)] for x, y in pts],
-                }
+                })
                 self.page_boxes.append(b)
         self._redraw()
 
@@ -404,15 +513,106 @@ class MarkTool:
             x0, y0 = b["x"] * self._scale, b["y"] * self._scale
             x1, y1 = (b["x"] + b["w"]) * self._scale, (b["y"] + b["h"]) * self._scale
             if x0 <= e.x <= x1 and y0 <= e.y <= y1:
+                self._push_undo()
                 self.page_boxes.pop(i)
                 break
         self._redraw()
 
+    def _var_for_kind(self, kind):
+        if kind == 'title':
+            return self.title_style_id
+        if kind == 'plain':
+            return self.sfx_style_id
+        return self.body_style_id
+
     def _box_style(self):
-        """新框的样式 id:勾选拟声词时用拟声词样式,否则用正文样式。"""
-        if self.sfx.get():
-            return self.sfx_style_id.get() or styles.DEFAULT_SFX
-        return self.body_style_id.get() or styles.DEFAULT_BODY
+        """新框样式:按当前类型取对应样式组的选中项。"""
+        return self._var_for_kind(self.kind.get()).get() or styles.KIND_DEFAULT_STYLE[self.kind.get()]
+
+    def _on_kind_change(self, *_):
+        """切换类型:恢复该类型上次用的「原文处理/GPU」,再刷新界面。"""
+        k = self.kind.get()
+        self.sfx.set(k == 'plain')
+        self._syncing = True
+        try:
+            self.cover.set(self._cover_mem.get(k, 'erase' if k == 'plain' else 'cover'))
+            self.gpu.set(bool(self._gpu_mem.get(k, False)))
+        finally:
+            self._syncing = False
+        self._rebuild_cover_ui()
+
+    def _rebuild_cover_ui(self):
+        """原文处理:译文直盖 / 抹除(*可勾 GPU 去字) / 色块覆盖。"""
+        try:
+            for w in self._cover_frame.winfo_children():
+                w.destroy()
+            tk.Label(self._cover_frame, text="原文处理:", fg='#2a5d8f').pack(side=tk.LEFT)
+            for val, txt in (('overlay', '译文直盖'), ('erase', '抹除'), ('cover', '色块覆盖')):
+                tk.Radiobutton(self._cover_frame, text=txt, variable=self.cover, value=val,
+                               command=self._on_cover_change).pack(side=tk.LEFT)
+            self._gpu_chk = tk.Checkbutton(self._cover_frame, text="GPU去字", variable=self.gpu)
+            self._on_cover_change()
+        except Exception:
+            pass
+
+    def _on_cover_change(self, *_):
+        """只有选「抹除」时才显示 GPU 去字;并记住该类型的选择。"""
+        k = self.kind.get()
+        self._cover_mem[k] = self.cover.get()
+        self._gpu_mem[k] = bool(self.gpu.get())
+        # GPU 勾选框的显隐:仅「抹除」时出现
+        try:
+            if self.cover.get() == 'erase':
+                if not self._gpu_chk.winfo_ismapped():
+                    self._gpu_chk.pack(side=tk.LEFT, padx=(2, 0))
+            else:
+                self._gpu_chk.pack_forget()
+        except Exception:
+            pass
+
+    def _remember_gpu(self, *_):
+        """GPU 勾选变化时,记到当前类型(软件内记忆)。"""
+        if getattr(self, '_syncing', False):
+            return
+        try:
+            self._gpu_mem[self.kind.get()] = bool(self.gpu.get())
+        except Exception:
+            pass
+
+    def _cycle_kind(self):
+        order = ['body', 'plain', 'title']
+        self.kind.set(order[(order.index(self.kind.get()) + 1) % len(order)])
+        self._on_kind_change()
+
+    def _toggle_cover(self):
+        order = ['overlay', 'erase', 'cover']
+        cur = self.cover.get()
+        self.cover.set(order[(order.index(cur) + 1) % 3] if cur in order else 'overlay')
+        self._on_cover_change()
+
+    def _new_box_fields(self):
+        """按当前界面设置生成新框的公共字段(类型/覆盖方式/方向/字号/样式)。"""
+        kind = self.kind.get()
+        dirm = self.dir_mode.get()
+        vertical = 'auto' if dirm == 'auto' else (dirm == 'v')
+        cover = self.cover.get()
+        _sf = self._style_fields(self._box_style())
+        self.erase.set(cover == 'erase')
+        fields = {
+            'kind': kind,
+            'cover': cover,
+            'vertical': vertical,
+            'size': self._size_val(),
+            'erase': (cover == 'erase'),
+            'sfx': (kind == 'plain'),
+            'style': _sf['style'], 'color': _sf['color'], 'outline': _sf['outline'],
+        }
+        _font = self._font_var(kind).get()
+        if _font:
+            fields['font'] = _font
+        if cover == 'erase':
+            fields['gpu'] = bool(self.gpu.get())
+        return fields
 
     def _style_fields(self, sid):
         """样式 id → 同时写入新字段 style 和旧字段(color/outline),保证旧版本也能读。"""
@@ -425,48 +625,180 @@ class MarkTool:
             'outline': bool(st.get('stroke')),
         }
 
+    def _select_at(self, ex, ey):
+        """按屏幕坐标选中框(再点空白处取消选中)。"""
+        hit = None
+        for i, b in enumerate(self.page_boxes):
+            x0, y0 = b['x'] * self._scale, b['y'] * self._scale
+            x1, y1 = (b['x'] + b['w']) * self._scale, (b['y'] + b['h']) * self._scale
+            if x0 <= ex <= x1 and y0 <= ey <= y1:
+                hit = i
+                break
+        self._sel = hit
+        if hit is not None:
+            b = self.page_boxes[hit]
+            self._sync_controls_from_box(b)
+            self.status.config(text='已选中框 %d(%s · %s),改工具栏设置会立即写回该框'
+                               % (hit, styles.KIND_LABEL.get(styles.kind_of(b), ''),
+                                  self._cover_text(b)))
+        else:
+            self.status.config(text='已取消选中')
+
+    def _cover_text(self, b):
+        cm = styles.cover_mode(b)
+        txt = styles.COVER_LABEL.get(cm, cm)
+        if cm == 'erase':
+            txt += '·GPU' if styles.gpu_of(b) else '·普通'
+        return txt
+
+    def _sync_controls_from_box(self, b):
+        """选中框时,把它的设置回填到工具栏(不改数据)。"""
+        self._syncing = True
+        try:
+            self.kind.set(styles.kind_of(b))
+            self.sfx.set(styles.kind_of(b) == 'plain')
+            self.cover.set(styles.cover_mode(b))
+            self.gpu.set(styles.gpu_of(b))
+            v = b.get('vertical')
+            self.dir_mode.set('auto' if not isinstance(v, bool) else ('v' if v else 'h'))
+            if b.get('size'):
+                self.size.set(str(b.get('size')))
+            sid = b.get('style')
+            k = styles.kind_of(b)
+            if sid:
+                self._var_for_kind(k).set(sid)
+                self._refresh_style_buttons()
+            fv = b.get('font') or ''
+            self._font_var(k).set(fv)
+            cmb = self._font_combo.get({'body': 'body', 'plain': 'sfx',
+                                        'title': 'title'}.get(k, 'body'))
+            if cmb is not None:
+                cmb.set(fv or '默认')
+            self._on_cover_change()
+        finally:
+            self._syncing = False
+
+    def _apply_current_to_sel(self, *_):
+        """把工具栏当前设置写回选中的框(类型/原文处理/GPU/方向/字号/样式)。"""
+        if self._syncing or self._sel is None:
+            return
+        if not (0 <= self._sel < len(self.page_boxes)):
+            self._sel = None
+            return
+        b = self.page_boxes[self._sel]
+        self._push_undo()
+        kind = self.kind.get()
+        cover = self.cover.get()
+        dirm = self.dir_mode.get()
+        b['kind'] = kind
+        b['cover'] = cover
+        b['vertical'] = 'auto' if dirm == 'auto' else (dirm == 'v')
+        b['size'] = self._size_val()
+        b['erase'] = (cover == 'erase')
+        b['sfx'] = (kind == 'plain')
+        if cover == 'erase':
+            b['gpu'] = bool(self.gpu.get())
+        else:
+            b.pop('gpu', None)
+        b.update(self._style_fields(self._var_for_kind(kind).get()))
+        _font = self._font_var(kind).get()
+        if _font:
+            b['font'] = _font
+        else:
+            b.pop('font', None)
+        self._redraw()
+        self.status.config(text='已把当前设置写到框 %d(%s · %s)'
+                           % (self._sel, styles.KIND_LABEL.get(kind, ''), self._cover_text(b)))
+
     def _add_box(self, dx0, dy0, dw, dh):
-        _sf = self._style_fields(self._box_style())
-        b = {
+        self._push_undo()
+        b = self._new_box_fields()
+        b.update({
             "x": round(dx0 / self._scale),
             "y": round(dy0 / self._scale),
             "w": round(dw / self._scale),
             "h": round(dh / self._scale),
-            "vertical": bool(self.vertical.get()),
-            "size": self._size_val(),
-            "erase": bool(self.erase.get()),
-            "sfx": bool(self.sfx.get()),
-            "style": _sf['style'], "color": _sf['color'], "outline": _sf['outline'],
-        }
+        })
         self.page_boxes.append(b)
 
     # ---------- 可视化样式库 ----------
     def _build_style_group(self, parent, kind, title):
         frame = tk.Frame(parent)
         frame.pack(side=tk.LEFT, padx=(0, 10))
-        ids = styles.BODY_IDS if kind == 'body' else styles.SFX_IDS
+        ids = {'body': styles.BODY_IDS, 'sfx': styles.SFX_IDS,
+               'title': styles.TITLE_IDS}[kind]
         lbl = tk.Label(frame, text=title, fg='#2a5d8f', width=9, anchor='w',
                        font=('Microsoft YaHei', 8, 'bold'))
         lbl.pack(side=tk.LEFT)
         setattr(self, '_style_lbl_' + kind, lbl)
         for sid in ids:
-            photo = _style_preview_photo(sid)
+            photo = _style_preview_photo(sid, font=self._font_var(kind).get())
             btn = tk.Button(frame, image=photo, relief='ridge', bd=1, padx=0, pady=0,
                             cursor='hand2', command=lambda s=sid: self._pick_style(kind, s))
             btn.pack(side=tk.LEFT, padx=1)
             self._style_btns[kind][sid] = btn
+        # 字体选择(选择后小图预览立即跟着变)
+        combo = ttk.Combobox(frame, values=['默认'] + styles.FONT_NAMES, width=8,
+                             state='readonly')
+        combo.set(self._font_var(kind).get() or '默认')
+        combo.pack(side=tk.LEFT, padx=(3, 0))
+        combo.bind('<<ComboboxSelected>>',
+                   lambda e, k=kind: self._on_font_change(k))
+        self._font_combo[kind] = combo
+
+    def _font_var(self, kind):
+        return {'body': self.body_font, 'sfx': self.sfx_font,
+                'title': self.title_font}.get(kind, self.body_font)
+
+    def _on_font_change(self, kind):
+        """切换某组字体:更新变量 → 刷新该组预览 → 若选中了框则写回该框。"""
+        combo = self._font_combo.get(kind)
+        val = combo.get() if combo else '默认'
+        self._font_var(kind).set('' if val == '默认' else val)
+        for sid, btn in self._style_btns.get(kind, {}).items():
+            try:
+                btn.config(image=_style_preview_photo(sid, font=self._font_var(kind).get()))
+            except Exception:
+                pass
+        if self._sel is not None and 0 <= self._sel < len(self.page_boxes):
+            self._apply_current_to_sel()
+        self.status.config(text='%s字体:%s(预览已更新)' % (
+            {'body': '正文', 'sfx': '拟声', 'title': '标题'}[kind], val))
+
+    def _toggle_style_bar(self):
+        """收起/展开文字样式栏(太占位置时收起)。"""
+        self._style_visible = not getattr(self, '_style_visible', True)
+        try:
+            if self._style_visible:
+                try:
+                    self._style_box.pack(side=tk.TOP, fill=tk.X, padx=6, pady=(2, 0),
+                                         before=self._hint_label)
+                except Exception:
+                    self._style_box.pack(side=tk.TOP, fill=tk.X, padx=6, pady=(2, 0))
+            else:
+                self._style_box.pack_forget()
+        except Exception:
+            pass
+        self.status.config(text='样式栏已' + ('展开' if self._style_visible else '收起'))
 
     def _pick_style(self, kind, sid):
-        var = self.body_style_id if kind == 'body' else self.sfx_style_id
+        var = self._var_for_kind('plain' if kind == 'sfx' else kind)
         var.set(sid)
         self._refresh_style_buttons()
+        if self._sel is not None and 0 <= self._sel < len(self.page_boxes):
+            try:
+                self.page_boxes[self._sel].update(self._style_fields(sid))
+                self._redraw()
+            except Exception:
+                pass
         p = styles.preset(sid) or {}
-        self.status.config(text='已选%s样式:%s(%s)' % (
-            '拟声词' if kind == 'sfx' else '正文', p.get('label', sid), p.get('desc', '')))
+        name = {'body': '正文', 'sfx': '拟声', 'title': '标题'}[kind]
+        self.status.config(text='已选%s样式:%s(%s)' % (name, p.get('label', sid), p.get('desc', '')))
 
     def _refresh_style_buttons(self):
         for kind, var, name in (('body', self.body_style_id, '正文'),
-                                ('sfx', self.sfx_style_id, '拟声')):
+                                ('sfx', self.sfx_style_id, '拟声'),
+                                ('title', self.title_style_id, '标题')):
             cur = var.get()
             for sid, btn in self._style_btns.get(kind, {}).items():
                 on = (sid == cur)
@@ -477,19 +809,53 @@ class MarkTool:
                 lbl.config(text='%s:%s' % (name, p.get('label', '') or '—'))
 
     def apply_style_page(self):
-        """把当前选中的正文 / 拟声词样式应用到本页所有对应框。"""
-        body_sid = self.body_style_id.get()
-        sfx_sid = self.sfx_style_id.get()
-        nb = ns = 0
+        """把三类样式分别应用到本页对应类型的框。"""
+        sids = {'body': self.body_style_id.get(), 'plain': self.sfx_style_id.get(),
+                'title': self.title_style_id.get()}
+        self._push_undo()
+        cnt = {'body': 0, 'plain': 0, 'title': 0}
+        fonts = {'body': self.body_font.get(), 'plain': self.sfx_font.get(),
+                 'title': self.title_font.get()}
         for b in self.page_boxes:
-            if bool(b.get('sfx')):
-                b.update(self._style_fields(sfx_sid))
-                ns += 1
+            k = styles.kind_of(b)
+            b.update(self._style_fields(sids[k]))
+            if fonts.get(k):
+                b['font'] = fonts[k]
             else:
-                b.update(self._style_fields(body_sid))
-                nb += 1
+                b.pop('font', None)
+            cnt[k] += 1
         self._redraw()
-        self.status.config(text='已把样式应用到本页:正文 %d 框 / 拟声 %d 框(记得保存)' % (nb, ns))
+        self.status.config(text='已把样式应用到本页:正文 %d / 无框 %d / 标题 %d(记得保存)'
+                           % (cnt['body'], cnt['plain'], cnt['title']))
+
+    def apply_style_all(self):
+        """把三类样式应用到全部页的对应类型框(可 Ctrl+Z 撤销)。"""
+        sids = {'body': self.body_style_id.get(), 'plain': self.sfx_style_id.get(),
+                'title': self.title_style_id.get()}
+        self._push_undo()
+        if self.cur_key:
+            self.regions[self.cur_key] = list(self.page_boxes)
+        cnt = {'body': 0, 'plain': 0, 'title': 0}
+        pages = 0
+        for _pg, arr in self.regions.items():
+            hit = False
+            fonts = {'body': self.body_font.get(), 'plain': self.sfx_font.get(),
+                     'title': self.title_font.get()}
+            for b in arr:
+                k = styles.kind_of(b)
+                b.update(self._style_fields(sids[k]))
+                if fonts.get(k):
+                    b['font'] = fonts[k]
+                else:
+                    b.pop('font', None)
+                cnt[k] += 1
+                hit = True
+            if hit:
+                pages += 1
+        self.page_boxes = [_norm_box(b) for b in self.regions.get(self.cur_key, [])]
+        self._redraw()
+        self.status.config(text='已把样式应用到全部(%d 页):正文 %d / 无框 %d / 标题 %d,记得保存'
+                           % (pages, cnt['body'], cnt['plain'], cnt['title']))
 
     # ---------- 按钮 ----------
     def prev_page(self):
@@ -500,12 +866,32 @@ class MarkTool:
         if self.idx < len(self.pages) - 1:
             self._goto(self.idx + 1)
 
+    def _push_undo(self, limit=60):
+        """记录整本快照,供 Ctrl+Z 撤销(新增/删除/应用样式都走这里)。"""
+        try:
+            if self.cur_key:
+                self.regions[self.cur_key] = list(self.page_boxes)
+            self._undo_stack.append(json.dumps(self.regions, ensure_ascii=False))
+            if len(self._undo_stack) > limit:
+                self._undo_stack.pop(0)
+        except Exception:
+            pass
+
     def undo(self):
+        if self._undo_stack:
+            try:
+                self.regions = json.loads(self._undo_stack.pop())
+            except Exception:
+                pass
+            self._load_page()
+            self.status.config(text='已撤销')
+            return
         if self.page_boxes:
             self.page_boxes.pop()
         self._redraw()
 
     def clear_page(self):
+        self._push_undo()
         self.page_boxes = []
         self._redraw()
 
@@ -527,7 +913,12 @@ class MarkTool:
         """翻译引擎多选 + 代理设置。"""
         dlg = tk.Toplevel(self.root)
         dlg.title('翻译设置')
-        dlg.geometry('720x400')
+        # 高度按内容自适应(AI 配置区加进来后 400 不够,会把「保存/取消」截掉)
+        dlg.geometry('780x640')
+        try:
+            dlg.minsize(680, 560)
+        except Exception:
+            pass
         dlg.transient(self.root)
 
         tk.Label(dlg, text='翻译引擎(可多选,并行查询,取最快返回):',
@@ -535,36 +926,96 @@ class MarkTool:
         eng_vars = {}
         frm = tk.Frame(dlg)
         frm.pack(fill=tk.X, padx=14)
-        for key, name in (('google', 'Google 免费(需机场/代理)'),
-                          ('mymemory', 'MyMemory 免费(免机场)'),
-                          ('ai', '交给 DSH 里的 AI 翻译(免机场)')):
+        for key, name in (('dsh', '交给 DSH 会话翻译(推荐/免API费)'),
+                          ('ai', '外接 AI 接口(自动,需Key)'),
+                          ('google', 'Google 免费'),
+                          ('mymemory', 'MyMemory 免费')):
             v = tk.BooleanVar(value=key in self.trans_cfg.get('engines', []))
             eng_vars[key] = v
             tk.Checkbutton(frm, text=name, variable=v).pack(side=tk.LEFT, padx=(0, 12))
 
+        # ---- AI 翻译接口(双端共享: ~/.manga-workflow/trans.json 的 ai 段) ----
+        ai = dict(self.trans_cfg.get('ai') or {})
+        if not ai.get('baseUrl') or not ai.get('apiKey'):
+            # 默认复用已配置的视觉引擎
+            try:
+                _v = _load_settings()
+                ai.setdefault('baseUrl', _v.get('apiBase') or '')
+                ai.setdefault('apiKey', _v.get('apiKey') or '')
+                ai.setdefault('model', _v.get('model') or '')
+            except Exception:
+                pass
+        af = tk.LabelFrame(dlg, text=' AI 翻译接口(推荐;免费引擎质量差) ')
+        af.pack(fill=tk.X, padx=14, pady=(12, 4))
+        row1 = tk.Frame(af)
+        row1.pack(fill=tk.X, padx=8, pady=(6, 2))
+        tk.Label(row1, text='接口地址:', width=9, anchor='w').pack(side=tk.LEFT)
+        ai_base = tk.StringVar(value=ai.get('baseUrl', ''))
+        tk.Entry(row1, textvariable=ai_base, width=44).pack(side=tk.LEFT)
+        tk.Label(row1, text='  模型:', anchor='w').pack(side=tk.LEFT)
+        ai_model = tk.StringVar(value=ai.get('model', ''))
+        tk.Entry(row1, textvariable=ai_model, width=16).pack(side=tk.LEFT)
+        row2 = tk.Frame(af)
+        row2.pack(fill=tk.X, padx=8, pady=(2, 6))
+        tk.Label(row2, text='API Key:', width=9, anchor='w').pack(side=tk.LEFT)
+        ai_key = tk.StringVar(value=ai.get('apiKey', ''))
+        tk.Entry(row2, textvariable=ai_key, width=52, show='*').pack(side=tk.LEFT)
+        ai_status = tk.Label(af, text='', fg='#555', anchor='w', justify='left')
+        ai_status.pack(fill=tk.X, padx=8, pady=(0, 6))
+
+        def test_ai():
+            ai_status.config(text='测试中…', fg='#666')
+            dlg.update_idletasks()
+            ok, msg = _test_ai_text(ai_model.get().strip(), ai_base.get().strip(),
+                                    ai_key.get().strip())
+            ai_status.config(text=msg, fg='#1a7f37' if ok else '#c0392b')
+
+        tk.Button(row2, text='测试接口', command=test_ai).pack(side=tk.LEFT, padx=(8, 0))
+
+        ov_var = tk.BooleanVar(value=bool(self.trans_cfg.get('overwrite', True)))
+        tk.Checkbutton(dlg, text='重新翻译时覆盖已有译文(推荐勾选)',
+                       variable=ov_var).pack(anchor='w', padx=14, pady=(6, 0))
         tk.Label(dlg, text='代理(可选;Google 在国内需要先开机场/代理):',
-                 anchor='w').pack(fill=tk.X, padx=14, pady=(16, 6))
+                 anchor='w').pack(fill=tk.X, padx=14, pady=(10, 6))
         proxy_var = tk.StringVar(value=self.trans_cfg.get('proxy', ''))
         tk.Entry(dlg, textvariable=proxy_var, width=60).pack(fill=tk.X, padx=14)
 
-        tip = ('提示:\n'
-               '· 【免机场】MyMemory、交给 DSH 的 AI 翻译 —— 国内可直连\n'
-               '· 【需机场】Google —— 国内需先打开机场软件,把代理地址填到上面(如 http://127.0.0.1:1080)\n'
-               '· 同时勾选多个在线引擎会并行查询,取最先返回的成功结果\n'
-               '· 勾选「交给 AI」后,点「翻译」会导出请求,由 DSH 会话里的 AI 翻译')
+        tip = ('优先级(勾选多个时):\n'
+               '  ① 高优先级:交给 DSH 会话翻译 / 外接 AI 接口\n'
+               '  ② 低优先级:免费渠道(Google、MyMemory)\n'
+               '· 勾了高优先级就用它;免费渠道只在没有高优先级时兜底\n'
+               '· 同时勾了 Google + MyMemory:会并行跑两个渠道并写 trans_alt.json 供对比\n'
+               '· 「交给 DSH 会话」:DSH 在运行时直接调用 DSH 模型自动翻译(免 API 费);\n'
+               '   DSH 未运行时则导出请求文件,你去会话里让 AI 翻译\n'
+               '· 这里与网页端「设置 → 文字翻译引擎」是同一份配置(双端共享)')
         tk.Label(dlg, text=tip, fg='#555', justify='left', anchor='w').pack(fill=tk.X, padx=14, pady=(10, 0))
 
         def ok():
             chosen = [k for k, v in eng_vars.items() if v.get()]
-            self.trans_cfg['engines'] = chosen or ['mymemory']
+            self.trans_cfg['engines'] = chosen or ['ai']
             self.trans_cfg['proxy'] = proxy_var.get().strip()
+            self.trans_cfg['ai'] = {
+                'baseUrl': ai_base.get().strip(),
+                'model': ai_model.get().strip(),
+                'apiKey': ai_key.get().strip(),
+            }
+            self.trans_cfg['overwrite'] = bool(ov_var.get())
             _save_trans_cfg(self.trans_cfg)
+            self.trans_cfg = _load_trans_cfg()
             dlg.destroy()
+            self.status.config(text='翻译设置已保存(双端共享)')
 
         bf = tk.Frame(dlg)
-        bf.pack(pady=16)
+        bf.pack(side=tk.BOTTOM, pady=12)
         tk.Button(bf, text='保存', command=ok, width=10).pack(side=tk.LEFT, padx=8)
         tk.Button(bf, text='取消', command=dlg.destroy, width=10).pack(side=tk.LEFT, padx=8)
+        # 按内容自动撑高,保证「保存/取消」永远可见(不同 DPI 下也不会被截)
+        try:
+            dlg.update_idletasks()
+            need_h = dlg.winfo_reqheight() + 20
+            dlg.geometry('780x%d' % max(560, min(need_h, 900)))
+        except Exception:
+            pass
 
     def translate_text(self):
         """免费在线翻译:按范围翻译 OCR 原文,写入 trans.json。后台线程 + 流式日志。"""
@@ -576,13 +1027,92 @@ class MarkTool:
         env['PYTHONIOENCODING'] = 'utf-8'
         scope = self.scope.get()
         key = self._page_key()
-        engines = self.trans_cfg.get('engines') or ['google', 'mymemory']
-        if 'ai' in engines:
+        engines = self.trans_cfg.get('engines') or ['dsh']
+        ai_cfg = (self.trans_cfg.get('ai') or {})
+        ai_ready = bool(ai_cfg.get('baseUrl') and ai_cfg.get('apiKey') and ai_cfg.get('model'))
+        if not ai_ready:
+            # 没配 AI 接口时,看看视觉引擎里有没有可复用的
+            try:
+                _v = _load_settings()
+                ai_ready = bool(_v.get('apiBase') and _v.get('apiKey') and _v.get('model'))
+            except Exception:
+                ai_ready = False
+        # 优先级:DSH/外接API 高;免费低。都勾时:能自动跑 AI 就先跑 AI,否则用 DSH
+        if 'dsh' in engines and not (('ai' in engines) and ai_ready):
+            # DSH 在运行 → 通过 host 桥直接调用 DSH 模型(全自动,不花 API 费)
+            if _dsh_bridge_info():
+                scope = self.scope.get()
+                only = self._page_key() if scope == 'page' else None
+                self._save()
+                # 先算好需要翻译的页(有框 + 有原文 + 还没译文)
+                try:
+                    reg = self._load(self.regions_file)
+                    ocr = self._load(self.ocr_file)
+                    tr = self._load(self.trans_file)
+                except Exception:
+                    reg, ocr, tr = {}, {}, {}
+                boxed = [p for p in reg if (reg.get(p) or [])]
+                _ov = self.trans_cfg.get('overwrite', True)
+
+                def _need(p):
+                    n = len(reg.get(p) or [])
+                    if not n:
+                        return False
+                    if not any(str(x).strip() for x in (ocr.get(p) or [])):
+                        return False
+                    if _ov:
+                        return True     # 覆盖模式:所有有原文的页都重译
+                    t = tr.get(p)
+                    if not isinstance(t, list) or len(t) < n:
+                        return True
+                    return any(not str(x).strip() for x in t[:n])
+                pages = [only] if only else sorted(p for p in boxed if _need(p))
+                if not pages:
+                    self.status.config(text='DSH 翻译:没有需要翻译的页(共 %d 页有框,均已翻译或无原文)'
+                                       % len(boxed))
+                    messagebox.showinfo('无需翻译', '共 %d 页有框,但都已翻译(或没有 OCR 原文)。\n'
+                                        '其它页目前没有标框,所以没有可翻译内容。' % len(boxed))
+                    return
+                skipped = len(boxed) - len(pages)
+                self.status.config(text='DSH 翻译:本次 %d 页(共 %d 页有框,其余已译/无原文),开始…'
+                                   % (len(pages), len(boxed)))
+
+                def worker():
+                    total = 0
+                    done_pages = 0
+                    err = None
+                    for i, pg in enumerate(pages, 1):
+                        try:
+                            self.root.after(0, lambda p=pg, i=i: self.status.config(
+                                text='DSH 翻译中(%d/%d 页):%s' % (i, len(pages), p)))
+                            total += _dsh_translate_via_bridge(
+                                self.src_dir, pg, overwrite=self.trans_cfg.get('overwrite', True))
+                            done_pages += 1
+                        except Exception as e:
+                            err = '第 %s 页失败:%s' % (pg, e)
+                            break
+                    if err:
+                        msg = ''
+                    else:
+                        msg = ('DSH 翻译完成:本次 %d 页 / %d 条\n(共 %d 页有框,其余无需翻译)'
+                               % (done_pages, total, len(boxed)))
+                    self.root.after(0, lambda: self._dsh_done(msg, err))
+                threading.Thread(target=worker, daemon=True).start()
+                return
             self._export_ai_request()
             return
-        online = [e for e in engines if e in ('google', 'mymemory')] or ['mymemory']
+        if 'dsh' in engines:
+            engines = [e for e in engines if e != 'dsh']      # 自动优先,去掉 dsh
+        if 'ai' in engines and not ai_ready:
+            engines = [e for e in engines if e != 'ai']       # 没配接口就跳过 AI
+        free = [e for e in engines if e in ('google', 'mymemory')]
+        run_engines = (['ai'] if ('ai' in engines and ai_ready) else []) + free
+        if not run_engines:
+            run_engines = free or ['google', 'mymemory']
         cmd = [vpy, os.path.join(here, 'translate.py'), self.src_dir]
-        cmd += ['--engines', ','.join(online), '--from', self.lang.get()]
+        cmd += ['--engines', ','.join(run_engines), '--from', self.lang.get()]
+        if self.trans_cfg.get('overwrite', True):
+            cmd += ['--overwrite']
         proxy = (self.trans_cfg.get('proxy') or '').strip()
         if proxy:
             cmd += ['--proxy', proxy]
@@ -615,7 +1145,8 @@ class MarkTool:
         req = {'folder': self.src_dir, 'pages': pages}
         path = os.path.join(self.src_dir, '_ai_translate_request.json')
         try:
-            json.dump(req, open(path, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(req, f, ensure_ascii=False, indent=1)
         except Exception as e:
             messagebox.showerror('导出失败', str(e))
             return
@@ -627,56 +1158,121 @@ class MarkTool:
 
     # ---------- 重标后同步 ----------
     def resync(self):
-        """重新标注后同步:整本重跑 OCR → 翻译 → 校对,避免译文与框顺序错位。"""
+        """重新标注后同步:对齐数组 → 整本 OCR → 翻译(覆盖旧译) → 校对。"""
         if any(getattr(self, a, False) for a in
                ('_ocr_running', '_detect_running', '_trans_running', '_sync_running')):
             messagebox.showinfo('提示', '正在处理中,请稍候...')
             return
         if not messagebox.askyesno(
-                '重标后同步',
-                '将整本重跑:\n1. 自动识别(OCR)\n2. 翻译\n3. 校对(原文+译文)\n\n'
-                '会覆盖 ocr_text.json / trans.json 中对应页的旧内容。\n继续吗?'):
+                '重标同步',
+                '将整本重跑:\n1. 对齐 OCR/译文与框(框数变了会清空该页旧数据)\n'
+                '2. 自动识别(OCR)\n3. 翻译(会覆盖旧译文)\n4. 校对\n\n继续吗?'):
             return
         import threading, queue, subprocess
         here, vpy, env = self._job_env()
         env['PYTHONIOENCODING'] = 'utf-8'
         self._save()
-        engines = self.trans_cfg.get('engines') or ['google', 'mymemory']
-        online = [e for e in engines if e in ('google', 'mymemory')]
+        # 引擎优先级
+        engines = self.trans_cfg.get('engines') or ['ai']
+        ai_cfg = (self.trans_cfg.get('ai') or {})
+        ai_ready = bool(ai_cfg.get('baseUrl') and ai_cfg.get('apiKey') and ai_cfg.get('model'))
+        if not ai_ready:
+            try:
+                _v = _load_settings()
+                ai_ready = bool(_v.get('apiBase') and _v.get('apiKey') and _v.get('model'))
+            except Exception:
+                ai_ready = False
+        free = [e for e in engines if e in ('google', 'mymemory')]
+        run_engines = (['ai'] if (ai_ready and 'ai' in engines) else []) + free
         proxy = (self.trans_cfg.get('proxy') or '').strip()
+        use_bridge = ('dsh' in engines) and (not run_engines) and bool(_dsh_bridge_info())
+        overwrite = self.trans_cfg.get('overwrite', True)
         self._sync_running = True
         self._sync_queue = queue.Queue()
-        self.status.config(text='重标同步 1/3:整本 OCR...')
+        self.status.config(text='重标同步 1/4:对齐框与数据…')
         self.root.configure(cursor='watch')
         q = self._sync_queue
 
         def run(cmd, label, timeout=7200):
             r = subprocess.run(cmd, env=env, capture_output=True, text=True,
                                encoding='utf-8', errors='replace', timeout=timeout)
-            if r.returncode != 0:
-                raise RuntimeError(label + ' 失败:' + ((r.stderr or '')[-500:] or ('退出码 %d' % r.returncode)))
+            if r.returncode not in (0, 1):
+                raise RuntimeError(label + ' 失败:' + ((r.stderr or '')[-500:] or
+                                                       ('退出码 %d' % r.returncode)))
+            return r.stdout or ''
 
         def worker():
             err = None
             note = ''
             try:
-                # 1) OCR 整本
+                # ===== 1) 对齐:框数变化时裁剪/补齐 OCR 与译文 =====
+                reg = self._load(self.regions_file)
+                ocr = self._load(self.ocr_file)
+                tr = self._load(self.trans_file)
+                fixed = 0
+                for pg, arr in reg.items():
+                    n = len(arr or [])
+                    for d in (ocr, tr):
+                        row = d.get(pg)
+                        if not isinstance(row, list):
+                            d[pg] = [''] * n
+                            fixed += 1
+                        elif len(row) > n:
+                            d[pg] = row[:n]
+                            fixed += 1
+                        elif len(row) < n:
+                            d[pg] = row + [''] * (n - len(row))
+                            fixed += 1
+                if fixed:
+                    try:
+                        json.dump(ocr, open(self.ocr_file, 'w', encoding='utf-8'),
+                                  ensure_ascii=False, indent=1)
+                        json.dump(tr, open(self.trans_file, 'w', encoding='utf-8'),
+                                  ensure_ascii=False, indent=1)
+                    except Exception:
+                        pass
+                    note += '已对齐 %d 处数组长度。\n' % fixed
+                # ===== 2) 整本 OCR =====
+                q.put(('status', '重标同步 2/4:整本 OCR…'))
                 run([vpy, os.path.join(here, 'ocr_regions.py'), self.src_dir,
                      '--lang', self.lang.get()], 'OCR')
-                # 2) 翻译整本(有在线引擎才跑;只有 AI 则稍后导出请求)
-                if online:
-                    q.put(('status', '重标同步 2/3:整本翻译...'))
+                # ===== 3) 翻译(覆盖旧译) =====
+                trans_n = 0
+                if use_bridge:
+                    ocr2 = self._load(self.ocr_file)
+                    pages = sorted(p for p in reg if any(str(x).strip() for x in (ocr2.get(p) or [])))
+                    for i, pg in enumerate(pages, 1):
+                        q.put(('status', '重标同步 3/4:DSH 翻译(%d/%d)…' % (i, len(pages))))
+                        trans_n += _dsh_translate_via_bridge(self.src_dir, pg, overwrite=overwrite)
+                    note += 'DSH 模型翻译 %d 页。\n' % len(pages)
+                elif run_engines:
+                    q.put(('status', '重标同步 3/4:翻译(%s)…' % ','.join(run_engines)))
                     cmd = [vpy, os.path.join(here, 'translate.py'), self.src_dir,
-                           '--engines', ','.join(online), '--from', self.lang.get()]
+                           '--engines', ','.join(run_engines), '--from', self.lang.get()]
+                    if overwrite:
+                        cmd += ['--overwrite']
                     if proxy:
                         cmd += ['--proxy', proxy]
-                    run(cmd, '翻译')
+                    out = run(cmd, '翻译')
+                    try:
+                        last = [l for l in out.splitlines() if l.strip().startswith('{')][-1]
+                        trans_n = int(json.loads(last).get('translated') or 0)
+                    except Exception:
+                        pass
+                    note += '翻译 %d 条。\n' % trans_n
                 else:
-                    note = '已选 AI 翻译,请点「翻译」导出请求'
-                # 3) 校对
-                q.put(('status', '重标同步 3/3:校对...'))
-                run([vpy, os.path.join(here, 'proofread.py'), self.src_dir,
-                     '--stage', 'pre', '--mode', 'both'], '校对')
+                    self._export_ai_request()
+                    note += '未配置可自动执行的翻译引擎,已导出翻译请求。\n'
+                # ===== 4) 校对 =====
+                q.put(('status', '重标同步 4/4:校对…'))
+                pout = run([vpy, os.path.join(here, 'proofread.py'), self.src_dir,
+                            '--stage', 'pre', '--mode', 'both'], '校对')
+                lines = [l for l in pout.splitlines() if l.strip()]
+                issues = [l for l in lines if l.startswith('[问题]')]
+                warns = [l for l in lines if l.startswith('[提示]')]
+                note += '校对:问题 %d 条 / 提示 %d 条\n' % (len(issues), len(warns))
+                for l in (issues + warns)[:8]:
+                    note += '  ' + l + '\n'
             except Exception as e:
                 err = str(e)
             q.put(('done', (err, note)))
@@ -709,9 +1305,84 @@ class MarkTool:
         self.refresh()
         self.status.config(text='重标同步完成')
         messagebox.showinfo('重标同步完成',
-                            '整本 OCR → 翻译 → 校对 已完成。\n\n'
-                            + (note + '\n\n' if note else '')
-                            + '下一步:点「校对(嵌字前)」看报告,确认后嵌字。')
+                            '对齐 → OCR → 翻译(覆盖) → 校对 已完成。\n\n'
+                            + (note + '\n' if note else '')
+                            + '下一步:确认校对报告后跑「嵌字」。')
+
+    # ---------- 全自动:OCR → 翻译 → 校对 → 嵌字 ----------
+    def auto_all(self):
+        """一键跑完整流程(整本/当前页按「范围」),中途出错即停止并提示。"""
+        if self._any_task_running():
+            self._job_busy_msg()
+            return
+        self._save()
+        here, vpy, env = self._job_env()
+        env['PYTHONIOENCODING'] = 'utf-8'
+        scope = self.scope.get()
+        key = self._page_key()
+        # 翻译引擎按优先级(与 translate_text 相同规则)
+        engines = self.trans_cfg.get('engines') or ['ai']
+        ai_cfg = (self.trans_cfg.get('ai') or {})
+        ai_ready = bool(ai_cfg.get('baseUrl') and ai_cfg.get('apiKey') and ai_cfg.get('model'))
+        if not ai_ready:
+            try:
+                _v = _load_settings()
+                ai_ready = bool(_v.get('apiBase') and _v.get('apiKey') and _v.get('model'))
+            except Exception:
+                ai_ready = False
+        free = [e for e in engines if e in ('google', 'mymemory')]
+        run_engines = (['ai'] if (ai_ready and 'ai' in engines) else []) + free
+        if 'dsh' in engines and not run_engines:
+            self._export_ai_request()
+            self.status.config(text='全自动:已导出翻译请求,请在会话里让 AI 翻译后重跑')
+            return
+        if not run_engines:
+            run_engines = ['google', 'mymemory']
+        trans_cmd = [vpy, os.path.join(here, 'translate.py'), self.src_dir,
+                     '--engines', ','.join(run_engines), '--from', self.lang.get()]
+        proxy = (self.trans_cfg.get('proxy') or '').strip()
+        if proxy:
+            trans_cmd += ['--proxy', proxy]
+        if scope == 'page':
+            trans_cmd += ['--page', key]
+        steps = [
+            ('OCR', [vpy, os.path.join(here, 'ocr_regions.py'), self.src_dir,
+                     '--lang', self.lang.get()] + (['--page', key] if scope == 'page' else [])),
+            ('翻译', trans_cmd),
+            ('校对', [vpy, os.path.join(here, 'proofread.py'), self.src_dir, '--stage', 'pre',
+                      '--mode', 'orig' if self.proof_mode.get() == '只校原文' else 'both']),
+            ('嵌字', [vpy, os.path.join(here, 'embed_regions.py'), self.src_dir]),
+        ]
+        self._auto_steps = steps
+        self._auto_env = env
+        self._auto_i = 0
+        self.status.config(text='全自动:开始')
+        self.root.after(50, self._auto_next)
+
+    def _auto_next(self):
+        steps = getattr(self, '_auto_steps', None)
+        i = getattr(self, '_auto_i', 0)
+        if not steps or i >= len(steps):
+            self.status.config(text='全自动:完成')
+            try:
+                messagebox.showinfo('全自动完成', 'OCR → 翻译 → 校对 → 嵌字 已全部执行完成。\n'
+                                    '嵌字结果在书文件夹的 out/ 或 out_lama/ 里。')
+            except Exception:
+                pass
+            return
+        name, cmd = steps[i]
+        self._auto_i = i + 1
+
+        def done(err, code, lines):
+            if err or code not in (0, 1):
+                self.status.config(text='全自动:%s 失败' % name)
+                messagebox.showerror('全自动失败', '%s 出错:\n%s' % (name, err or '\n'.join(lines[-5:])))
+                return
+            self.root.after(30, self._auto_next)
+
+        self._run_job('全自动·' + name, cmd, getattr(self, '_auto_env', {}),
+                      on_line=lambda l, n=name: self.status.config(text='全自动[%s]: %s' % (n, l)),
+                      on_done=done)
 
     # ---------- 校对(嵌字前) ----------
     def proofread_pre(self):
@@ -728,20 +1399,38 @@ class MarkTool:
                       on_line=lambda l: self.status.config(text='校对中: ' + l),
                       on_done=self._proof_done)
 
+    def _dsh_done(self, msg, err):
+        if err:
+            self.status.config(text='DSH 翻译失败')
+            messagebox.showerror('DSH 翻译失败', err + '\n\n(可改用「导出请求交会话翻译」)')
+            return
+        self.status.config(text=msg)
+        try:
+            self.trans = self._load(self.trans_file)
+            self._load_page()
+        except Exception:
+            pass
+        messagebox.showinfo('DSH 翻译完成', msg + '\n译文已写入 trans.json')
+
     def _proof_done(self, err, code, lines):
         report = ('\n'.join(lines)).strip()
-        if err:
+        # proofread.py 用退出码 1 表示「发现了问题」,不是程序失败;要展示具体问题
+        found = (code == 1) and (('"issues"' in report) or ('"stage"' in report))
+        if err and not found:
             self.status.config(text='校对失败')
             messagebox.showerror('校对失败', err)
             return
-        self.status.config(text='校对完成')
+        self.status.config(text='校对发现问题' if found else '校对完成')
+        body = report or '(无输出)'
+        if found:
+            body = '⚠ 校对发现以下问题(按提示修改后重新校对):\n\n' + body
         dlg = tk.Toplevel(self.root)
-        dlg.title('嵌字前校对')
-        dlg.geometry('780x540')
+        dlg.title('校对结果(发现问题)' if found else '嵌字前校对')
+        dlg.geometry('820x560')
         dlg.transient(self.root)
         txt = tk.Text(dlg, wrap='word', font=('Microsoft YaHei', 10))
         txt.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
-        txt.insert('1.0', report or '(无输出)')
+        txt.insert('1.0', body)
         txt.config(state='disabled')
         tk.Button(dlg, text='关闭', command=dlg.destroy, width=10).pack(pady=6)
 
@@ -943,6 +1632,122 @@ class MarkTool:
         env['PYTHONIOENCODING'] = 'utf-8'
         return here, vpy, env
 
+    def _key(self, action):
+        try:
+            w = self.root.focus_get()
+            if isinstance(w, (tk.Entry, tk.Text, ttk.Combobox, ttk.Entry)):
+                return
+        except Exception:
+            pass
+        if action == 'mode_box':
+            self.mode.set('box')
+        elif action == 'mode_paint':
+            self.mode.set('paint')
+        elif action in ('kind_body', 'kind_plain', 'kind_title'):
+            k = action.split('_')[1]
+            self.kind.set(k)
+            self.cover.set('erase' if k == 'plain' else 'cover')
+            try:
+                self._on_kind_change()
+            except Exception:
+                pass
+        elif action == 'cover_cycle':
+            self._toggle_cover()
+        elif action == 'gpu_toggle':
+            # GPU 去字只对「抹除」生效:非抹除时按 G 不改变勾选(否则会"记住"一个看不见的勾)
+            if self.cover.get() != 'erase':
+                try:
+                    self.status.config(text='GPU 去字只对「抹除」生效:请先把原文处理切到「抹除」')
+                except Exception:
+                    pass
+                return
+            self.gpu.set(not self.gpu.get())
+        elif action == 'translate':
+            self.translate_text()
+        elif action == 'ocr':
+            self.run_ocr()
+
+    def _detect_flags(self):
+        """自动标框参数:全部=自动区分正文/拟声词;气泡=只标气泡;拟声=只标气泡外文字。"""
+        v = self.detect_mode.get()
+        mode = 'bubble' if v == '只标气泡' else ('sfx' if v == '只标拟声词' else 'all')
+        return ['--mode', mode]
+
+    def _restore_tool_ui(self):
+        """恢复上次的类型/原文处理/GPU/方向/字号/样式/字体/自动标框模式。"""
+        t = _load_tool_ui()
+        try:
+            if t.get('kind') in ('body', 'plain', 'title'):
+                self.kind.set(t['kind'])
+            if t.get('cover') in ('overlay', 'erase', 'cover'):
+                self.cover.set(t['cover'])
+            if isinstance(t.get('gpu'), bool):
+                self.gpu.set(t['gpu'])
+            if t.get('dir_mode') in ('auto', 'v', 'h'):
+                self.dir_mode.set(t['dir_mode'])
+            if t.get('size'):
+                self.size.set(str(t['size']))
+            if isinstance(t.get('auto_size'), bool):
+                self.auto_size.set(t['auto_size'])
+            if t.get('detect_mode') in ('全部(自动区分)', '只标气泡', '只标拟声词'):
+                self.detect_mode.set(t['detect_mode'])
+            if t.get('mode') in ('box', 'paint'):
+                self.mode.set(t['mode'])
+            st = t.get('styles') or {}
+            if st.get('body'):
+                self.body_style_id.set(st['body'])
+            if st.get('sfx'):
+                self.sfx_style_id.set(st['sfx'])
+            if st.get('title'):
+                self.title_style_id.set(st['title'])
+            ft = t.get('fonts') or {}
+            if ft.get('body'):
+                self.body_font.set(ft['body'])
+            if ft.get('sfx'):
+                self.sfx_font.set(ft['sfx'])
+            if ft.get('title'):
+                self.title_font.set(ft['title'])
+        except Exception:
+            pass
+
+    def _attach_tool_ui_traces(self):
+        self._tui_timer = None
+        self._tui_ready = True
+        for v in (self.kind, self.cover, self.gpu, self.dir_mode, self.size,
+                  self.detect_mode, self.body_style_id, self.sfx_style_id,
+                  self.title_style_id, self.body_font, self.sfx_font,
+                  self.title_font, self.auto_size, self.mode):
+            try:
+                v.trace_add('write', lambda *a: self._schedule_save_tool_ui())
+            except Exception:
+                pass
+
+    def _schedule_save_tool_ui(self):
+        if not getattr(self, '_tui_ready', False) or self._syncing:
+            return
+        try:
+            if getattr(self, '_tui_timer', None):
+                self.root.after_cancel(self._tui_timer)
+        except Exception:
+            pass
+        try:
+            self._tui_timer = self.root.after(700, self._save_tool_ui_now)
+        except Exception:
+            pass
+
+    def _save_tool_ui_now(self):
+        self._tui_timer = None
+        _save_tool_ui({
+            'mode': self.mode.get(), 'kind': self.kind.get(), 'cover': self.cover.get(),
+            'gpu': bool(self.gpu.get()), 'dir_mode': self.dir_mode.get(),
+            'size': self.size.get(), 'auto_size': bool(self.auto_size.get()),
+            'detect_mode': self.detect_mode.get(),
+            'styles': {'body': self.body_style_id.get(), 'sfx': self.sfx_style_id.get(),
+                       'title': self.title_style_id.get()},
+            'fonts': {'body': self.body_font.get(), 'sfx': self.sfx_font.get(),
+                      'title': self.title_font.get()},
+        })
+
     def auto_detect(self):
         """自动标框:按范围(当前页/整本)检测气泡内文字。"""
         if self._job_running() or getattr(self, '_detect_running', False) or getattr(self, '_ocr_running', False):
@@ -960,7 +1765,7 @@ class MarkTool:
             return
         here, vpy, env = self._job_env()
         img_path = os.path.join(self.src_dir, self.pages[self.idx])
-        dflag = [] if self.bubble_only.get() else ['--all']
+        dflag = self._detect_flags()
         cmd = [vpy, os.path.join(here, 'detect_boxes.py'), img_path] + dflag
         self._run_job('自动标框(本页)', cmd, env,
                       on_line=lambda l: self.status.config(text='自动标框中: ' + l),
@@ -984,19 +1789,39 @@ class MarkTool:
             self.status.config(text='自动标框失败')
             messagebox.showerror('自动标框失败', '解析结果失败: %s' % e)
             return
-        _sf = self._style_fields(self._box_style())
+        added = 0
+        skipped = 0
         for b in boxes:
-            self.page_boxes.append({
-                'x': b['x'], 'y': b['y'], 'w': b['w'], 'h': b['h'],
-                'vertical': bool(self.vertical.get()),
+            k = b.get('kind') or 'body'      # 检测脚本会区分 气泡内=正文 / 气泡外=拟声词
+            dirm = self.dir_mode.get()
+            sid = {'body': self.body_style_id.get() or styles.DEFAULT_BODY,
+                   'plain': self.sfx_style_id.get() or styles.DEFAULT_SFX,
+                   'title': self.title_style_id.get() or styles.DEFAULT_TITLE}[k]
+            _sf = self._style_fields(sid)
+            _nb = {
+                'kind': k,
+                'cover': 'overlay' if k == 'plain' else 'cover',
+                'vertical': 'auto' if dirm == 'auto' else (dirm == 'v'),
                 'size': self._size_val(),
-                'erase': bool(self.erase.get()),
-                'sfx': bool(self.sfx.get()),
+                'erase': False,
+                'sfx': (k == 'plain'),
                 'style': _sf['style'], 'color': _sf['color'], 'outline': _sf['outline'],
-                'auto': True,          # 自动标框的框:不参与嵌字(除非人工改过字)
-            })
+                'x': b['x'], 'y': b['y'], 'w': b['w'], 'h': b['h'],
+                'auto': True,
+            }
+            if k == 'plain' and self.gpu.get():
+                _nb['gpu'] = True
+            # 已经有标注的位置不再重复标(避免"把已标注的框重新标一遍")
+            if any(_box_overlap(_nb, eb) for eb in self.page_boxes):
+                skipped += 1
+                continue
+            self.page_boxes.append(_nb)
+            added += 1
         self.refresh()
-        self.status.config(text='自动标框:本页新增 %d 个框,排除 %d 个拟声词/无框文字' % (len(boxes), dropped))
+        self.status.config(text='自动标框:本页新增 %d 个框(跳过已有标注 %d 个,排除 %d 个拟声词/无框文字)'
+                           % (added, skipped, dropped))
+        self.pageinfo.config(text='%s · 自动标框 +%d(跳过重复 %d)' % (
+            self.pageinfo.cget('text'), added, skipped))
 
     def _detect_book(self):
         """整本自动标框:后台线程 + 流式日志。"""
@@ -1005,7 +1830,7 @@ class MarkTool:
             return
         here, vpy, env = self._job_env()
         self._save()
-        bflag = [] if self.bubble_only.get() else ['--all']
+        bflag = self._detect_flags()
         cmd = [vpy, os.path.join(here, 'detect_book.py'), self.src_dir] + bflag
         self._run_job('自动标框(整本)', cmd, env,
                       on_line=lambda l: self.status.config(text='整本自动标框中: ' + l),
@@ -1090,7 +1915,7 @@ class MarkTool:
             info = ''
             try:
                 # ---- 1) 整本自动标框 ----
-                bflag = [] if self.bubble_only.get() else ['--all']
+                bflag = self._detect_flags()
                 code, lines, serr = stream(
                     [vpy, os.path.join(here, 'detect_book.py'), self.src_dir] + bflag, 7200)
                 if code != 0:
@@ -1157,25 +1982,31 @@ class MarkTool:
         return -1
 
     def on_double(self, e):
-        i = self._box_at(e)
-        if i < 0:
-            return
-        self._edit_texts(i)
+        self._dbl = True          # 双击期间不让 on_up 建框/选框
+        try:
+            self._drag = None
+            self._paint_pts = []
+            i = self._box_at(e)
+            if i < 0:
+                return
+            self._edit_texts(i)
+        finally:
+            self._dbl = False
 
     def _save_texts(self):
         try:
             merged = self._merge_save(self.ocr_file, self.box_text,
                                       getattr(self, '_base_text', self.box_text))
-            json.dump(merged, open(self.ocr_file, 'w', encoding='utf-8'),
-                      ensure_ascii=False, indent=1)
+            with open(self.ocr_file, 'w', encoding='utf-8') as f:
+                json.dump(merged, f, ensure_ascii=False, indent=1)
             self.box_text = merged
         except Exception:
             pass
         try:
             merged = self._merge_save(self.trans_file, self.trans,
                                       getattr(self, '_base_trans', self.trans))
-            json.dump(merged, open(self.trans_file, 'w', encoding='utf-8'),
-                      ensure_ascii=False, indent=1)
+            with open(self.trans_file, 'w', encoding='utf-8') as f:
+                json.dump(merged, f, ensure_ascii=False, indent=1)
             self.trans = merged
         except Exception:
             pass
@@ -1322,12 +2153,47 @@ def _show_engine_help(parent, statuses):
     tk.Button(bf, text='关闭', command=dlg.destroy, width=10).pack(side=tk.LEFT, padx=8)
 
 
+def _box_overlap(a, b, iou_thr=0.25):
+    """两个框是否重叠(中心落在对方内 或 IoU>阈值)。自动标框据此跳过已标注的框。"""
+    try:
+        acx, acy = a['x'] + a['w'] / 2.0, a['y'] + a['h'] / 2.0
+        if b['x'] <= acx <= b['x'] + b['w'] and b['y'] <= acy <= b['y'] + b['h']:
+            return True
+        bcx, bcy = b['x'] + b['w'] / 2.0, b['y'] + b['h'] / 2.0
+        if a['x'] <= bcx <= a['x'] + a['w'] and a['y'] <= bcy <= a['y'] + a['h']:
+            return True
+        x0 = max(a['x'], b['x'])
+        y0 = max(a['y'], b['y'])
+        x1 = min(a['x'] + a['w'], b['x'] + b['w'])
+        y1 = min(a['y'] + a['h'], b['y'] + b['h'])
+        if x1 > x0 and y1 > y0:
+            inter = (x1 - x0) * (y1 - y0)
+            union = a['w'] * a['h'] + b['w'] * b['h'] - inter
+            if union > 0 and inter / float(union) > iou_thr:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def _norm_box(b):
-    """兼容旧字段:无文本框标注(nobox) → 抹除原文(erase)。"""
+    """兼容旧字段,并在内存里补齐新字段(kind / cover / vertical)。
+
+    旧数据:erase/nobox/sfx 保持原有语义,不会因为新版本改变旧本的嵌字效果。
+    """
+    b = dict(b)
     if 'erase' not in b:
-        b = dict(b)
         b['erase'] = not b.pop('nobox', False)
     b.setdefault('sfx', bool(b.get('points')))
+    if 'kind' not in b:
+        b['kind'] = styles.kind_of(b)
+    if 'cover' not in b:
+        if not b.get('erase', True):
+            b['cover'] = 'keep'
+        elif b['kind'] in ('body', 'title'):
+            b['cover'] = 'cover'
+        else:
+            b['cover'] = 'erase'
     return b
 
 
@@ -1336,23 +2202,34 @@ def _last_file():
 
 
 def _trans_cfg_file():
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), '_translate_cfg.json')
+    # 双端共享(桌面端与网页设置页读写同一个文件)
+    return os.path.join(os.path.expanduser('~'), '.manga-workflow', 'trans.json')
+
 
 
 def _load_trans_cfg():
-    d = {'engines': ['google', 'mymemory'], 'proxy': ''}
+    d = {'engines': ['ai'], 'proxy': '', 'ai': {}, 'overwrite': True}
     try:
         d.update(json.load(open(_trans_cfg_file(), encoding='utf-8')))
     except Exception:
         pass
     if not isinstance(d.get('engines'), list) or not d['engines']:
-        d['engines'] = ['google', 'mymemory']
+        d['engines'] = ['ai']
+    if not isinstance(d.get('ai'), dict):
+        d['ai'] = {}
+    if not isinstance(d.get('overwrite'), bool):
+        d['overwrite'] = True
     return d
 
 
 def _save_trans_cfg(d):
     try:
-        json.dump(d, open(_trans_cfg_file(), 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
+        p = _trans_cfg_file()
+        dd = os.path.dirname(p)
+        if dd and not os.path.isdir(dd):
+            os.makedirs(dd, exist_ok=True)
+        with open(p, 'w', encoding='utf-8') as f:
+            json.dump(d, f, ensure_ascii=False, indent=1)
     except Exception:
         pass
 
@@ -1362,6 +2239,31 @@ def _save_trans_cfg(d):
 # rememberPathWeb     : 网页端是否记住上次路径(网页端改)
 # rememberPathDesktop : 桌面端是否记住上次路径(桌面端改)
 _UI_DEFAULTS = {'sidebarEnabled': True, 'bannerEnabled': True, 'rememberPathWeb': True, 'rememberPathDesktop': True}
+
+
+def _tool_ui_file():
+    return os.path.join(os.path.expanduser('~'), '.manga-workflow', 'tool_ui.json')
+
+
+def _load_tool_ui():
+    try:
+        with open(_tool_ui_file(), encoding='utf-8') as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_tool_ui(d):
+    try:
+        p = _tool_ui_file()
+        dd = os.path.dirname(p)
+        if dd and not os.path.isdir(dd):
+            os.makedirs(dd, exist_ok=True)
+        with open(p, 'w', encoding='utf-8') as f:
+            json.dump(d, f, ensure_ascii=False, indent=1)
+    except Exception:
+        pass
 
 
 def _ui_cfg_file():
@@ -1436,6 +2338,91 @@ def _open_editor(src, regions):
         pass
     MarkTool(root, src, regions)
     root.mainloop()
+
+
+def _dsh_bridge_info():
+    """读取 host 写的本机桥信息(端口+令牌);不可用返回 None。"""
+    import urllib.request
+    p = os.path.join(os.path.expanduser('~'), '.manga-workflow', 'host.json')
+    try:
+        with open(p, encoding='utf-8') as f:
+            d = json.load(f)
+        port = int(d.get('port'))
+        token = str(d.get('token') or '')
+        if not port or not token:
+            return None
+        req = urllib.request.Request('http://127.0.0.1:%d/ping' % port)
+        with urllib.request.urlopen(req, timeout=2) as r:
+            j = json.loads(r.read().decode('utf-8', 'replace'))
+        if not j.get('ok'):
+            return None
+        return {'port': port, 'token': token}
+    except Exception:
+        return None
+
+
+def _dsh_translate_via_bridge(folder, page=None, timeout=1800, overwrite=True):
+    """调用 host 桥,用 DSH 已配置模型翻译该文件夹(可指定单页);返回完成条数。"""
+    import urllib.request
+    info = _dsh_bridge_info()
+    if not info:
+        raise RuntimeError('DSH 未在运行或未加载插件(找不到本机桥)')
+    url = 'http://127.0.0.1:%d/translate-dsh' % info['port']
+    body = json.dumps({'folder': folder, 'page': page or None,
+                       'overwrite': bool(overwrite)}).encode('utf-8')
+    req = urllib.request.Request(url, data=body, method='POST', headers={
+        'Content-Type': 'application/json',
+        'x-manga-token': info['token'],
+    })
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        j = json.loads(r.read().decode('utf-8', 'replace'))
+    if not j.get('ok'):
+        raise RuntimeError(j.get('error') or 'DSH 翻译失败')
+    return int(j.get('done') or 0)
+
+
+def _test_ai_text(model, api_base, api_key):
+    """测试 AI 翻译接口:发一句日文,看能否返回中文。返回 (ok, 说明)。"""
+    import time as _t
+    import urllib.request
+    url = (api_base or '').rstrip('/') + '/chat/completions'
+    payload = json.dumps({
+        'model': model,
+        'messages': [
+            {'role': 'system', 'content': '把日文翻译成简体中文,只输出译文。'},
+            {'role': 'user', 'content': 'これはテストです。'},
+        ],
+        'max_tokens': 300,
+        'stream': False,
+    }).encode('utf-8')
+    headers = {'Content-Type': 'application/json'}
+    if api_key:
+        headers['Authorization'] = 'Bearer ' + api_key
+    req = urllib.request.Request(url, data=payload, headers=headers, method='POST')
+    t0 = _t.time()
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            body = r.read().decode('utf-8', 'replace')
+        ms = int((_t.time() - t0) * 1000)
+        reply = ''
+        try:
+            d = json.loads(body)
+            _msg = ((d.get('choices') or [{}])[0].get('message') or {})
+            reply = _msg.get('content') or _msg.get('reasoning_content') or ''
+        except Exception:
+            pass
+        reply = str(reply).strip()[:60]
+        ok = any('\u4e00' <= ch <= '\u9fff' for ch in reply)
+        if ok:
+            return True, '翻译接口可用 ✅  延迟 %dms  返回「%s」' % (ms, reply)
+        return False, '接口通了但返回不是中文 ⚠️  返回「%s」' % reply
+    except Exception as e:
+        detail = ''
+        try:
+            detail = e.read().decode('utf-8', 'replace')[:220]
+        except Exception:
+            pass
+        return False, ('翻译接口失败 ❌  %s %s' % (e, detail)).strip()
 
 
 # ---------------- 设置:视觉模型 / API(与网页端共用 settings.json) ----------------
@@ -1609,33 +2596,34 @@ def _test_vision_chat(model, api_base, api_key):
 _STYLE_PHOTO = {}          # (id,w,h) -> PhotoImage(防止被回收)
 
 
-def _style_preview_photo(style_id, w=54, h=30):
+def _style_preview_photo(style_id, w=54, h=30, font=''):
     """用与嵌字完全相同的渲染器,画一张小样式缩略图(工具栏用)。"""
-    key = (style_id, w, h)
+    key = (style_id, w, h, font or '')
     if key in _STYLE_PHOTO:
         return _STYLE_PHOTO[key]
     preset = styles.preset(style_id)
     bg = (250, 250, 252)
-    if style_id in ('body_white', 'sfx_white'):
+    if style_id in ('body_white', 'sfx_white', 'title_white'):
         bg = (64, 68, 78)          # 反白样式用深底,才看得出白字
     img = Image.new('RGB', (w, h), bg)
     d = ImageDraw.Draw(img)
-    st = styles.resolve({'style': style_id})
-    glyph = '音' if (preset or {}).get('kind') == 'sfx' else '正'
+    st = styles.resolve({'style': style_id, 'font': font or None})
+    kind = (preset or {}).get('kind')
+    glyph = '标' if kind == 'title' else ('音' if kind == 'sfx' else '正')
     size = 19
-    font = styles.load_font(size, bool(st.get('bold')), bool(st.get('art')))
-    bb = d.textbbox((0, 0), glyph, font=font)
+    font_obj = styles.load_font(size, bool(st.get('bold')), bool(st.get('art')), font or None)
+    bb = d.textbbox((0, 0), glyph, font=font_obj)
     tw, th = bb[2] - bb[0], bb[3] - bb[1]
     x = (w - tw) // 2 - bb[0]
     y = (h - th) // 2 - bb[1] - 2
-    styles.draw_styled(d, (x, y), glyph, font, st, size)
+    styles.draw_styled(d, (x, y), glyph, font_obj, st, size)
     photo = ImageTk.PhotoImage(img)
     _STYLE_PHOTO[key] = photo
     return photo
 
 
 # ---------------- 版本 ----------------
-APP_VERSION = 'V1.8.2'
+APP_VERSION = 'V1.10'
 
 # ---------------- 帮助窗口(程序内渲染,不依赖 .md 文件关联)----------------
 

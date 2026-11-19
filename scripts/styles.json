@@ -1,149 +1,381 @@
 {
-  "_note": "文字样式预设:正文(body)/拟声词(sfx)。fill/strokeFill 为 [r,g,b];stroke 为描边宽度(按字号 20 计);art=漫画艺术字(投影+双层描边);shadow 为 [dx,dy,r,g,b]。",
-  "presets": [
-    {
-      "id": "body_classic",
-      "kind": "body",
-      "label": "经典",
-      "desc": "黑字白边",
-      "fill": [0, 0, 0],
-      "stroke": 4,
-      "strokeFill": [255, 255, 255],
-      "bold": false,
-      "art": false,
-      "shadow": null
-    },
-    {
-      "id": "body_plain",
-      "kind": "body",
-      "label": "极简",
-      "desc": "纯黑无描边",
-      "fill": [0, 0, 0],
-      "stroke": 0,
-      "strokeFill": null,
-      "bold": false,
-      "art": false,
-      "shadow": null
-    },
-    {
-      "id": "body_thin",
-      "kind": "body",
-      "label": "细边",
-      "desc": "黑字细白边",
-      "fill": [0, 0, 0],
-      "stroke": 2,
-      "strokeFill": [255, 255, 255],
-      "bold": false,
-      "art": false,
-      "shadow": null
-    },
-    {
-      "id": "body_bold",
-      "kind": "body",
-      "label": "加粗",
-      "desc": "粗黑字白边",
-      "fill": [0, 0, 0],
-      "stroke": 5,
-      "strokeFill": [255, 255, 255],
-      "bold": true,
-      "art": false,
-      "shadow": null
-    },
-    {
-      "id": "body_white",
-      "kind": "body",
-      "label": "反白",
-      "desc": "白字黑边",
-      "fill": [255, 255, 255],
-      "stroke": 4,
-      "strokeFill": [0, 0, 0],
-      "bold": false,
-      "art": false,
-      "shadow": null
-    },
-    {
-      "id": "body_shadow",
-      "kind": "body",
-      "label": "投影",
-      "desc": "黑字灰影",
-      "fill": [0, 0, 0],
-      "stroke": 0,
-      "strokeFill": null,
-      "bold": false,
-      "art": false,
-      "shadow": [2, 3, 150, 150, 150]
-    },
-    {
-      "id": "sfx_classic",
-      "kind": "sfx",
-      "label": "漫画",
-      "desc": "黑字白边+影",
-      "fill": [0, 0, 0],
-      "stroke": 4,
-      "strokeFill": [255, 255, 255],
-      "bold": true,
-      "art": true,
-      "shadow": [2, 3, 55, 55, 55]
-    },
-    {
-      "id": "sfx_white",
-      "kind": "sfx",
-      "label": "反白",
-      "desc": "白字黑边+影",
-      "fill": [255, 255, 255],
-      "stroke": 5,
-      "strokeFill": [0, 0, 0],
-      "bold": true,
-      "art": true,
-      "shadow": [2, 3, 55, 55, 55]
-    },
-    {
-      "id": "sfx_red",
-      "kind": "sfx",
-      "label": "燃红",
-      "desc": "红字白边",
-      "fill": [214, 48, 49],
-      "stroke": 5,
-      "strokeFill": [255, 255, 255],
-      "bold": true,
-      "art": true,
-      "shadow": [2, 3, 60, 40, 40]
-    },
-    {
-      "id": "sfx_yellow",
-      "kind": "sfx",
-      "label": "亮黄",
-      "desc": "黄字黑边",
-      "fill": [255, 214, 64],
-      "stroke": 5,
-      "strokeFill": [0, 0, 0],
-      "bold": true,
-      "art": true,
-      "shadow": [2, 3, 55, 55, 55]
-    },
-    {
-      "id": "sfx_orange",
-      "kind": "sfx",
-      "label": "热橙",
-      "desc": "橙字白边",
-      "fill": [255, 122, 40],
-      "stroke": 5,
-      "strokeFill": [255, 255, 255],
-      "bold": true,
-      "art": true,
-      "shadow": [2, 3, 60, 45, 35]
-    },
-    {
-      "id": "sfx_blue",
-      "kind": "sfx",
-      "label": "冷蓝",
-      "desc": "蓝字白边",
-      "fill": [64, 150, 255],
-      "stroke": 5,
-      "strokeFill": [255, 255, 255],
-      "bold": true,
-      "art": true,
-      "shadow": [2, 3, 40, 55, 70]
-    }
-  ]
+ "_note": "文字样式预设:正文(body)/拟声词(sfx)。fill/strokeFill 为 [r,g,b];stroke 为描边宽度(按字号 20 计);art=漫画艺术字(投影+双层描边);shadow 为 [dx,dy,r,g,b]。",
+ "presets": [
+  {
+   "id": "body_classic",
+   "kind": "body",
+   "label": "经典",
+   "desc": "黑字白边",
+   "fill": [
+    0,
+    0,
+    0
+   ],
+   "stroke": 4,
+   "strokeFill": [
+    255,
+    255,
+    255
+   ],
+   "bold": false,
+   "art": false,
+   "shadow": null
+  },
+  {
+   "id": "body_plain",
+   "kind": "body",
+   "label": "极简",
+   "desc": "纯黑无描边",
+   "fill": [
+    0,
+    0,
+    0
+   ],
+   "stroke": 0,
+   "strokeFill": null,
+   "bold": false,
+   "art": false,
+   "shadow": null
+  },
+  {
+   "id": "body_thin",
+   "kind": "body",
+   "label": "细边",
+   "desc": "黑字细白边",
+   "fill": [
+    0,
+    0,
+    0
+   ],
+   "stroke": 2,
+   "strokeFill": [
+    255,
+    255,
+    255
+   ],
+   "bold": false,
+   "art": false,
+   "shadow": null
+  },
+  {
+   "id": "body_bold",
+   "kind": "body",
+   "label": "加粗",
+   "desc": "粗黑字白边",
+   "fill": [
+    0,
+    0,
+    0
+   ],
+   "stroke": 5,
+   "strokeFill": [
+    255,
+    255,
+    255
+   ],
+   "bold": true,
+   "art": false,
+   "shadow": null
+  },
+  {
+   "id": "body_white",
+   "kind": "body",
+   "label": "反白",
+   "desc": "白字黑边",
+   "fill": [
+    255,
+    255,
+    255
+   ],
+   "stroke": 4,
+   "strokeFill": [
+    0,
+    0,
+    0
+   ],
+   "bold": false,
+   "art": false,
+   "shadow": null
+  },
+  {
+   "id": "body_shadow",
+   "kind": "body",
+   "label": "投影",
+   "desc": "黑字灰影",
+   "fill": [
+    0,
+    0,
+    0
+   ],
+   "stroke": 0,
+   "strokeFill": null,
+   "bold": false,
+   "art": false,
+   "shadow": [
+    2,
+    3,
+    150,
+    150,
+    150
+   ]
+  },
+  {
+   "id": "sfx_classic",
+   "kind": "sfx",
+   "label": "漫画",
+   "desc": "黑字白边+影",
+   "fill": [
+    0,
+    0,
+    0
+   ],
+   "stroke": 4,
+   "strokeFill": [
+    255,
+    255,
+    255
+   ],
+   "bold": true,
+   "art": true,
+   "shadow": [
+    2,
+    3,
+    55,
+    55,
+    55
+   ]
+  },
+  {
+   "id": "sfx_white",
+   "kind": "sfx",
+   "label": "反白",
+   "desc": "白字黑边+影",
+   "fill": [
+    255,
+    255,
+    255
+   ],
+   "stroke": 5,
+   "strokeFill": [
+    0,
+    0,
+    0
+   ],
+   "bold": true,
+   "art": true,
+   "shadow": [
+    2,
+    3,
+    55,
+    55,
+    55
+   ]
+  },
+  {
+   "id": "sfx_red",
+   "kind": "sfx",
+   "label": "燃红",
+   "desc": "红字白边",
+   "fill": [
+    214,
+    48,
+    49
+   ],
+   "stroke": 5,
+   "strokeFill": [
+    255,
+    255,
+    255
+   ],
+   "bold": true,
+   "art": true,
+   "shadow": [
+    2,
+    3,
+    60,
+    40,
+    40
+   ]
+  },
+  {
+   "id": "sfx_yellow",
+   "kind": "sfx",
+   "label": "亮黄",
+   "desc": "黄字黑边",
+   "fill": [
+    255,
+    214,
+    64
+   ],
+   "stroke": 5,
+   "strokeFill": [
+    0,
+    0,
+    0
+   ],
+   "bold": true,
+   "art": true,
+   "shadow": [
+    2,
+    3,
+    55,
+    55,
+    55
+   ]
+  },
+  {
+   "id": "sfx_orange",
+   "kind": "sfx",
+   "label": "热橙",
+   "desc": "橙字白边",
+   "fill": [
+    255,
+    122,
+    40
+   ],
+   "stroke": 5,
+   "strokeFill": [
+    255,
+    255,
+    255
+   ],
+   "bold": true,
+   "art": true,
+   "shadow": [
+    2,
+    3,
+    60,
+    45,
+    35
+   ]
+  },
+  {
+   "id": "sfx_blue",
+   "kind": "sfx",
+   "label": "冷蓝",
+   "desc": "蓝字白边",
+   "fill": [
+    64,
+    150,
+    255
+   ],
+   "stroke": 5,
+   "strokeFill": [
+    255,
+    255,
+    255
+   ],
+   "bold": true,
+   "art": true,
+   "shadow": [
+    2,
+    3,
+    40,
+    55,
+    70
+   ]
+  },
+  {
+   "id": "title_bold",
+   "kind": "title",
+   "label": "粗黑",
+   "desc": "黑字白边 加粗 居中",
+   "fill": [
+    0,
+    0,
+    0
+   ],
+   "stroke": 3,
+   "strokeFill": [
+    255,
+    255,
+    255
+   ],
+   "bold": true,
+   "art": false,
+   "shadow": null
+  },
+  {
+   "id": "title_white",
+   "kind": "title",
+   "label": "反白",
+   "desc": "白字黑边 加粗 居中",
+   "fill": [
+    255,
+    255,
+    255
+   ],
+   "stroke": 3,
+   "strokeFill": [
+    0,
+    0,
+    0
+   ],
+   "bold": true,
+   "art": false,
+   "shadow": null
+  },
+  {
+   "id": "title_black",
+   "kind": "title",
+   "label": "纯黑",
+   "desc": "黑字无描边 加粗 居中",
+   "fill": [
+    0,
+    0,
+    0
+   ],
+   "stroke": 0,
+   "strokeFill": null,
+   "bold": true,
+   "art": false,
+   "shadow": null
+  },
+  {
+   "id": "title_yellow",
+   "kind": "title",
+   "label": "亮黄",
+   "desc": "黄字黑边 加粗 居中",
+   "fill": [
+    255,
+    214,
+    0
+   ],
+   "stroke": 3,
+   "strokeFill": [
+    0,
+    0,
+    0
+   ],
+   "bold": true,
+   "art": false,
+   "shadow": null
+  },
+  {
+   "id": "title_art",
+   "kind": "title",
+   "label": "艺术",
+   "desc": "艺术字 投影 居中",
+   "fill": [
+    255,
+    255,
+    255
+   ],
+   "stroke": 3,
+   "strokeFill": [
+    0,
+    0,
+    0
+   ],
+   "bold": true,
+   "art": true,
+   "shadow": [
+    2,
+    3,
+    40,
+    40,
+    40
+   ]
+  }
+ ]
 }

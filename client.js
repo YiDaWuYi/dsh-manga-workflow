@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-manga-workflow',
   factory(require) {
   // 版本号(发布时同步 package.json / 桌面端 mark_tool.py)
-  const APP_VERSION = 'V1.8.3';
+  const APP_VERSION = 'V1.10';
 
     const React = require('react');
     const h = React.createElement;
@@ -142,7 +142,21 @@ window.__ModuleLoader__.load({
       };
     }
 
-    function StyleChips({ presets, value, onChange, glyph }) {
+    const WEB_FONT_CSS = {
+      '微软雅黑': '"Microsoft YaHei"', '宋体': 'SimSun', '黑体': 'SimHei', '楷体': 'KaiTi',
+      '仿宋': 'FangSong', '华文仿宋': 'STFangsong', '华文楷体': 'STKaiti',
+      '华文琥珀': 'STHupo', '瘦金体': 'STXingkai', '隶书': 'LiSu', '幼圆': 'YouYuan',
+    };
+    const WEB_FONT_FALLBACK = ['微软雅黑', '宋体', '黑体', '楷体', '仿宋', '华文仿宋',
+      '华文楷体', '华文琥珀', '瘦金体', '隶书', '幼圆'];
+    const WEB_FONT_NAMES = (() => {
+      const ks = Object.keys(WEB_FONT_CSS || {});
+      return ks.length ? ks : WEB_FONT_FALLBACK;
+    })();
+    const cssFont = (name) => (name && WEB_FONT_CSS[name])
+      ? (WEB_FONT_CSS[name] + ', "Microsoft YaHei", sans-serif') : undefined;
+
+    function StyleChips({ presets, value, onChange, glyph, font }) {
       if (!presets || !presets.length) return h('span', { style: { ...S.muted, fontSize: '11px' } }, '样式加载中…');
       return h('div', { style: { display: 'flex', gap: '4px', flexWrap: 'wrap', alignItems: 'center' } },
         presets.map((p) => {
@@ -162,15 +176,38 @@ window.__ModuleLoader__.load({
               background: on ? 'rgba(255,210,77,0.16)' : undefined,
             },
           },
-            h('span', { style: styleCss(p, 19) }, glyph),
+            h('span', { style: { ...styleCss(p, 19), fontFamily: cssFont(font) } }, glyph),
             h('span', { style: { fontSize: '9px', opacity: 0.75 } }, p.label),
           );
         }),
       );
     }
 
-    function Marker({ folder, page, data, mode, setMode, vertical, size, sfx, erase, bodyStyle, sfxStyle, onBoxesChange, onTextEdit }) {
+    const KIND_LABEL = { body: '正文', plain: '拟声', title: '标题' };
+    const COVER_LABEL = { overlay: '直盖', erase: '抹除', cover: '覆盖' };
+    const kindOfBox = (b) => {
+      const k = b && b.kind;
+      if (k === 'body' || k === 'plain' || k === 'title') return k;
+      if (b && (b.sfx || b.nobox || (b.points && b.points.length))) return 'plain';
+      return 'body';
+    };
+    const coverOfBox = (b) => {
+      const m = b && b.cover;
+      if (m === 'keep') return 'overlay';
+      if (m === 'overlay' || m === 'erase' || m === 'cover') return m;
+      if (b && 'erase' in b) return b.erase ? 'erase' : 'overlay';
+      return kindOfBox(b) === 'plain' ? 'overlay' : 'cover';
+    };
+    const gpuOfBox = (b) => !!(b && (b.gpu !== undefined ? b.gpu : b.lama));
+
+    function Marker({ folder, page, data, mode, setMode, kind, cover, gpu, dirMode,
+                       size, autoSize, bodyStyle, sfxStyle, titleStyle, fontByKind,
+                       onBoxesChange, onTextEdit }) {
       const [boxes, setBoxes] = React.useState([]);
+      const [sel, setSel] = React.useState(null);
+      const [downAt, setDownAt] = React.useState(null);
+      const selRef = React.useRef(null);
+      React.useEffect(() => { selRef.current = sel; }, [sel]);
       const [imgUrl, setImgUrl] = React.useState('');
       const [natural, setNatural] = React.useState({ w: 1280, h: 1800 });
       const [drag, setDrag] = React.useState(null);       // 框选拖拽
@@ -217,6 +254,57 @@ window.__ModuleLoader__.load({
 
       const pushUndo = (cur) => setUndo((u) => [...u.slice(-40), cur]);
 
+      const newBoxFields = () => {
+        const k = kind || 'body';
+        const cov = cover || (k === 'plain' ? 'overlay' : 'cover');
+        const dir = dirMode || 'auto';
+        const f = {
+          kind: k,
+          cover: cov,
+          vertical: dir === 'auto' ? 'auto' : (dir === 'v'),
+          size: Number(size) || 20,
+          size_fixed: !autoSize,
+          erase: cov === 'erase',
+          sfx: k === 'plain',
+          style: k === 'title' ? titleStyle : (k === 'plain' ? sfxStyle : bodyStyle),
+          color: 'black', outline: true,
+        };
+        if (cov === 'erase') f.gpu = !!gpu;
+        const fonts = fontByKind || {};
+        if (fonts[k]) f.font = fonts[k];
+        return f;
+      };
+
+      // 选中框后,工具栏设置变化 → 立即写回该框
+      React.useEffect(() => {
+        const i = selRef.current;
+        if (i === null || !(i >= 0 && i < boxes.length)) return;
+        setBoxes((prev) => {
+          if (!(i >= 0 && i < prev.length)) return prev;
+          const cur = prev[i];
+          const k = kind || 'body';
+          const cov = cover || (k === 'plain' ? 'overlay' : 'cover');
+          const dir = dirMode || 'auto';
+          const next = {
+            ...cur,
+            kind: k, cover: cov,
+            vertical: dir === 'auto' ? 'auto' : (dir === 'v'),
+            size: Number(size) || 20,
+            size_fixed: !autoSize,
+            erase: cov === 'erase', sfx: k === 'plain',
+            style: k === 'title' ? titleStyle : (k === 'plain' ? sfxStyle : bodyStyle),
+          };
+          if (cov === 'erase') next.gpu = !!gpu; else delete next.gpu;
+          const fonts = fontByKind || {};
+          if (fonts[k]) next.font = fonts[k]; else delete next.font;
+          const same = JSON.stringify(cur) === JSON.stringify(next);
+          if (same) return prev;
+          const copy = prev.slice();
+          copy[i] = next;
+          return copy;
+        });
+      }, [kind, cover, gpu, dirMode, size, autoSize, bodyStyle, sfxStyle, titleStyle, fontByKind]);
+
       const pos = (e) => {
         const el = wrapRef.current;
         if (!el) return { x: 0, y: 0 };
@@ -228,6 +316,7 @@ window.__ModuleLoader__.load({
       const onDown = (e) => {
         if (e.button !== 0) return;
         const p = pos(e);
+        setDownAt({ x: p.x, y: p.y });
         if (mode === 'paint') {
           setPaint([{ x: Math.round(p.x), y: Math.round(p.y) }]);
         } else {
@@ -251,6 +340,20 @@ window.__ModuleLoader__.load({
       };
 
       const onUp = () => {
+        // 几乎没移动 → 视为「点选」
+        const d0 = downAt;
+        const moved = paint && paint.length > 1
+          ? Math.hypot(paint[paint.length - 1].x - d0.x, paint[paint.length - 1].y - d0.y)
+          : (drag ? Math.hypot(drag.x1 - drag.x0, drag.y1 - drag.y0) : 0);
+        if (d0 && moved <= 4 && !(paint && paint.length > 1)) {
+          const i = hit(d0, hitPad());
+          setSel(i >= 0 ? i : null);
+          setPaint(null);
+          setDrag(null);
+          setDownAt(null);
+          return;
+        }
+        setDownAt(null);
         if (paint && paint.length) {
           const xs = paint.map((p) => p.x);
           const ys = paint.map((p) => p.y);
@@ -259,11 +362,8 @@ window.__ModuleLoader__.load({
           pushUndo(boxes);
           if (w >= 4 && hh >= 4) {
             setBoxes((prev) => [...prev, {
+              ...newBoxFields(),
               x: x0, y: y0, w, h: hh,
-              vertical: !!vertical, size: Number(size) || 20,
-              erase: !!erase, sfx: !!sfx,
-              style: sfx ? sfxStyle : bodyStyle,
-              color: 'black', outline: true,
               points: paint.map((p) => [p.x, p.y]),
             }]);
           }
@@ -279,11 +379,8 @@ window.__ModuleLoader__.load({
         if (w < 8 || hh < 8) return;
         pushUndo(boxes);
         setBoxes((prev) => [...prev, {
+          ...newBoxFields(),
           x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(hh),
-          vertical: !!vertical, size: Number(size) || 20,
-          erase: !!erase, sfx: !!sfx,
-          style: sfx ? sfxStyle : bodyStyle,
-          color: 'black', outline: true,
         }]);
       };
 
@@ -353,22 +450,41 @@ window.__ModuleLoader__.load({
                 })
               : h('div', { style: { ...S.muted, padding: '40px', textAlign: 'center' } }, '图片加载中…'),
             imgError ? h('div', { style: { position: 'absolute', left: 0, right: 0, top: '40%', textAlign: 'center', color: '#ff8080', fontSize: '12px' } }, imgError) : null,
-            boxes.map((b, i) => h('div', {
-              key: `b${i}`,
-              style: {
-                position: 'absolute',
-                left: pct(b.x, natural.w), top: pct(b.y, natural.h),
-                width: pct(b.w, natural.w), height: pct(b.h, natural.h),
-                border: b.sfx ? '2px solid #ff4d4d' : '2px solid #00d000',
-                background: b.sfx ? 'rgba(255,77,77,0.10)' : 'rgba(0,208,0,0.08)',
-                boxSizing: 'border-box', pointerEvents: 'none',
+            boxes.map((b, i) => {
+              const k = kindOfBox(b);
+              const cm = coverOfBox(b);
+              const col = k === 'title' ? '#4da6ff' : (k === 'plain' ? '#ff4d4d' : '#00d000');
+              const bg = k === 'title' ? 'rgba(77,166,255,0.12)'
+                : (k === 'plain' ? 'rgba(255,77,77,0.10)' : 'rgba(0,208,0,0.08)');
+              const proc = COVER_LABEL[cm] + (cm === 'erase' ? (gpuOfBox(b) ? '·GPU' : '·普通') : '');
+              const pcol = cm === 'overlay' ? '#00e5ff' : (cm === 'cover' ? '#ffb020' : '#ff8080');
+              return h('div', {
+                key: `b${i}`,
+                style: {
+                  position: 'absolute',
+                  left: pct(b.x, natural.w), top: pct(b.y, natural.h),
+                  width: pct(b.w, natural.w), height: pct(b.h, natural.h),
+                  border: (sel === i ? '3px solid #ffff00' : '2px solid ' + col),
+                  background: bg,
+                  boxSizing: 'border-box', pointerEvents: 'none',
+                },
               },
-            }, h('span', {
-              style: {
-                position: 'absolute', left: 1, top: 1, fontSize: '10px', padding: '0 2px',
-                color: b.sfx ? '#ff4d4d' : '#00d000', background: 'rgba(0,0,0,0.45)',
-              },
-            }, b.sfx ? '拟声' : '正文'))),
+                h('span', {
+                  style: {
+                    position: 'absolute', left: 0, top: '-14px', fontSize: '10px',
+                    padding: '0 2px', color: col, background: 'rgba(0,0,0,0.55)',
+                    whiteSpace: 'nowrap',
+                  },
+                }, KIND_LABEL[k]),
+                h('span', {
+                  style: {
+                    position: 'absolute', right: 0, top: '-14px', fontSize: '10px',
+                    padding: '0 2px', color: pcol, background: 'rgba(0,0,0,0.55)',
+                    whiteSpace: 'nowrap',
+                  },
+                }, proc),
+              );
+            }),
             bx ? h('div', {
               style: {
                 position: 'absolute', left: pct(bx.x, natural.w), top: pct(bx.y, natural.h),
@@ -401,17 +517,17 @@ window.__ModuleLoader__.load({
     const HELP_ROWS = [
       ['差异点', '网页工作台', '桌面版 mark.bat'],
       ['平台', '浏览器内(DSH 侧边栏)', '独立窗口(tkinter)'],
-      ['标框', '框选 / 涂抹', '框选 / 涂抹'],
+      ['标框', '框选 / 自由框选', '框选 / 自由框选'],
       ['撤销', '多步(最多 40 步,Ctrl+Z)', '完整栈(Ctrl+Z)'],
       ['双击改字', '弹窗改原文/译文', '弹窗改原文/译文'],
       ['自动标框', '❌ 不支持', '✅ 支持(自动检测气泡)'],
       ['一键识别', '❌ 不支持', '✅ 支持(标框+OCR)'],
       ['重标同步', '❌ 不支持', '✅ 整本 OCR→翻译→校对'],
       ['引擎帮助/修复', '❌ 不支持', '✅ 检测 + 复制修复关键词'],
-      ['翻译设置', '读插件配置(不能界面改)', '✅ 引擎多选 + 代理'],
+      ['翻译设置', '✅ 设置→文字翻译引擎(含 DSH 模型/免Key)', '✅ 引擎多选 + AI 接口 + 代理'],
       ['校对模式', '固定「原文+译文」', '✅ 可切「只校原文」'],
       ['自动字号/横竖', '❌ 不支持', '✅ 可开关'],
-      ['GPU去字', '读本子 config.json', '✅ 勾选切换'],
+      ['GPU去字', '✅ 按框设置(原文处理=抹除时勾选)', '✅ 按框设置'],
       ['缩放/拖动画面', '❌ 自适应铺满', '✅ 适配窗口'],
       ['文件选择', '✅「浏览…」系统对话框 / 粘贴路径', '✅ 系统浏览对话框'],
       ['视觉引擎(设置)', '✅ 两端共用同一份配置', '✅ 同一份配置'],
@@ -447,7 +563,9 @@ window.__ModuleLoader__.load({
         '左键拖动:画框 / 涂抹',
         '右键:删除点中的框',
         '双击框:编辑原文/译文',
-        'B 框选 · P 涂抹 · V 竖排 · H 横排 · N 拟声词 · E 抹除原文',
+        'B 框选 · P 自由框选 · V 竖排 · H 横排 · A 自动检测',
+        'N 切换类型(正文→无框正文/拟声词→标题) · E 切换原文处理(直盖→抹除→覆盖)',
+        '单击框 = 选中(黄框),之后改工具栏设置会立即写回该框',
         'Ctrl+Z 撤销(最多 40 步) · Ctrl+S 保存 · ←/→ 翻页',
       ];
       const SETTINGS_LINES = [
@@ -491,12 +609,20 @@ window.__ModuleLoader__.load({
         '· 兜底失败不会覆盖已成功的本地 OCR 结果',
       ];
 
+      const TIPS = [
+        '【强烈建议】',
+        '1. 拟声词不要用「GPU 去字(LaMa)」:拟声词大多压在画面、网点、线条上,LaMa 修复会把画面糊成一片,',
+        '   效果普遍很差;拟声词建议用「译文直盖」,或按画面情况用「色块覆盖」。',
+        '2. 翻译请接入 API(设置 → 视觉引擎里配的 Kimi / DeepSeek 等会自动优先用于翻译);',
+        '   免费渠道(Google / MyMemory)质量明显差,常出现错译、音译乱翻、标点错乱。',
+      ];
+
       const FAQ = [
         'Q: 点 OCR/翻译后很久没反应?',
         'A: 任务是异步的,看下方日志滚动;整本 OCR 通常 1-3 分钟。',
         '',
         'Q: 翻译很慢或失败?',
-        'A: 没配代理时 Google 会超时,会自动回退到 MyMemory;可在桌面版「翻译设置」配代理。',
+        'A: 默认优先用 AI(已配置的视觉引擎 API),失败才回退免费引擎;免费引擎质量差,建议接 API。',
         '',
         'Q: 保存后 OCR 结果变了?',
         'A: 不会。保存只应用你改过的文本,不会用旧快照覆盖新 OCR。',
@@ -525,6 +651,10 @@ window.__ModuleLoader__.load({
         h('div', { style: S.row },
           h('button', { type: 'button', style: S.btn, onClick: onBack }, '← 返回'),
           h('span', { style: { fontWeight: 600, fontSize: '14px' } }, '使用说明'),
+        ),
+        h('div', { style: S.box },
+          h('div', { style: boxTitle }, '⚠ 使用提示(重要)'),
+          h(HelpLines, { lines: TIPS, style: S.muted }),
         ),
         h('div', { style: S.box },
           h('div', { style: boxTitle }, '一、基本流程'),
@@ -596,6 +726,8 @@ window.__ModuleLoader__.load({
               '',
               '【正文样式】经典(黑字白边)· 极简(纯黑)· 细边 · 加粗 · 反白(白字黑边)· 投影',
               '【拟声样式】漫画(黑字白边+影)· 反白 · 燃红 · 亮黄 · 热橙 · 冷蓝',
+              '【标题样式】粗黑 · 反白 · 纯黑 · 亮黄 · 艺术(标题嵌字自动居中加粗)',
+              '每组右侧有字体下拉(宋体/黑体/楷体/仿宋/华文仿宋/瘦金体…),选完预览立即同步',
               '',
               '· 点一下选中(高亮),之后新画的框使用它;',
               '· 改已有框:选好样式 → 点「应用到本页」→ 再保存;',
@@ -669,6 +801,9 @@ window.__ModuleLoader__.load({
       const [setupBusy, setSetupBusy] = React.useState('');
       const [cost, setCost] = React.useState(null);
       const [ocrCfg, setOcrCfg] = React.useState(null);
+      const [trans, setTrans] = React.useState(null);
+      const [transForm, setTransForm] = React.useState({ engines: [], proxy: '', baseUrl: '', model: '', key: '' });
+      const [transMsg, setTransMsg] = React.useState('');
       const [ocrMin, setOcrMin] = React.useState('1');
       const [ocrMax, setOcrMax] = React.useState('30');
       const [priceIn, setPriceIn] = React.useState(() => {
@@ -677,6 +812,55 @@ window.__ModuleLoader__.load({
       const [priceOut, setPriceOut] = React.useState(() => {
         try { const p = JSON.parse(localStorage.getItem('manga-desk-prices') || '{}'); return p.out == null ? '' : String(p.out); } catch (e) { return ''; }
       });
+
+      async function refreshTrans() {
+        try {
+          const d = await api('/trans');
+          setTrans(d);
+          setTransForm((f) => ({
+            ...f,
+            engines: Array.isArray(d.engines) && d.engines.length ? d.engines : ['ai'],
+            proxy: d.proxy || '',
+            baseUrl: (d.ai && d.ai.baseUrl) || '',
+            model: (d.ai && d.ai.model) || '',
+            key: '',
+          }));
+        } catch (e) {
+          setTransMsg('读取翻译配置失败:' + String(e.message || e));
+        }
+      }
+
+      async function saveTrans() {
+        setTransMsg('保存中…');
+        try {
+          const ai = { baseUrl: transForm.baseUrl.trim(), model: transForm.model.trim() };
+          if (transForm.key.trim()) ai.apiKey = transForm.key.trim();
+          const d = await api('/trans', {
+            engines: transForm.engines.length ? transForm.engines : ['ai'],
+            proxy: transForm.proxy.trim(),
+            ai,
+          });
+          setTrans((prev) => ({ ...(prev || {}), engines: d.engines, proxy: d.proxy, ai: d.ai }));
+          setTransForm((f) => ({ ...f, key: '' }));
+          setTransMsg('已保存(双端共享)✅');
+        } catch (e) {
+          setTransMsg('保存失败:' + String(e.message || e));
+        }
+      }
+
+      async function testTrans() {
+        setTransMsg('测试中…(大模型可能要几秒)');
+        try {
+          const d = await api('/trans-test', {
+            baseUrl: transForm.baseUrl.trim(),
+            model: transForm.model.trim(),
+            apiKey: transForm.key.trim() || undefined,
+          });
+          setTransMsg((d.ok ? '✅ ' : '❌ ') + (d.message || ''));
+        } catch (e) {
+          setTransMsg('测试失败:' + String(e.message || e));
+        }
+      }
 
       async function refreshSetup() {
         try {
@@ -716,6 +900,7 @@ window.__ModuleLoader__.load({
 
       React.useEffect(() => {
         refreshSetup();
+        refreshTrans();
       }, []);
 
       React.useEffect(() => {
@@ -932,6 +1117,68 @@ window.__ModuleLoader__.load({
           ),
           msg ? h('div', { style: { ...S.muted, marginTop: '6px', whiteSpace: 'pre-wrap' } }, msg) : null,
           file ? h('div', { style: { ...S.muted, marginTop: '6px', fontSize: '11px' } }, `配置文件:${file}`) : null,
+        ),
+        h('div', { style: { ...S.box, marginTop: '10px' } },
+          h('div', { style: { fontWeight: 600, marginBottom: '6px' } }, '文字翻译引擎(双端共享)'),
+          h('div', { style: { ...S.muted, fontSize: '11px', marginBottom: '6px' } },
+            '优先级:DSH 模型 / 外接 AI 接口最高;免费渠道最低(多选会并行对比)。'
+            + ' 网页端点「翻译」时:勾了 DSH 模型→直接调用 DSH 已配置模型自动翻译(免 Key);'
+            + ' 桌面端的「DSH」= 导出请求交给会话翻译。'),
+          h('div', { style: S.row },
+            h('span', { style: { ...S.muted, width: '64px' } }, '引擎'),
+            [['dsh', 'DSH 模型(免Key·网页自动)'], ['ai', '外接 AI 接口'], ['google', 'Google 免费'], ['mymemory', 'MyMemory 免费']].map(([k, name]) =>
+              h('button', {
+                key: k, type: 'button',
+                style: transForm.engines.includes(k) ? S.btnOn : S.btn,
+                onClick: () => setTransForm((f) => ({
+                  ...f,
+                  engines: f.engines.includes(k)
+                    ? f.engines.filter((x) => x !== k)
+                    : f.engines.concat([k]),
+                })),
+              }, (transForm.engines.includes(k) ? '✓ ' : '') + name)),
+          ),
+          h('div', { style: S.row },
+            h('span', { style: { ...S.muted, width: '64px' } }, '代理'),
+            h('input', {
+              style: S.input, value: transForm.proxy, placeholder: '可选,如 http://127.0.0.1:7897',
+              onChange: (e) => setTransForm((f) => ({ ...f, proxy: e.target.value })),
+            }),
+          ),
+          h('div', { style: S.row },
+            h('span', { style: { ...S.muted, width: '64px' } }, 'AI 地址'),
+            h('input', {
+              style: S.input, value: transForm.baseUrl,
+              placeholder: '如 https://api.moonshot.cn/v1',
+              onChange: (e) => setTransForm((f) => ({ ...f, baseUrl: e.target.value })),
+            }),
+            h('span', { style: { ...S.muted, width: '36px', textAlign: 'right' } }, '模型'),
+            h('input', {
+              style: { ...S.input, maxWidth: '160px' }, value: transForm.model,
+              placeholder: '如 kimi-k3',
+              onChange: (e) => setTransForm((f) => ({ ...f, model: e.target.value })),
+            }),
+          ),
+          h('div', { style: S.row },
+            h('span', { style: { ...S.muted, width: '64px' } }, 'API Key'),
+            h('input', {
+              style: S.input, type: 'password', value: transForm.key,
+              placeholder: trans && trans.ai && trans.ai.hasKey
+                ? ('已配置 ' + (trans.ai.keyMask || '****') + ' —— 留空表示不修改')
+                : '未配置,请填写',
+              onChange: (e) => setTransForm((f) => ({ ...f, key: e.target.value })),
+            }),
+          ),
+          h('div', { style: { ...S.row, marginTop: '6px' } },
+            h('button', { type: 'button', style: S.btnOn, onClick: saveTrans }, '保存'),
+            h('button', { type: 'button', style: S.btn, onClick: testTrans }, '测试接口'),
+            h('button', { type: 'button', style: S.btn, onClick: refreshTrans }, '重新读取'),
+            h('span', { style: { ...S.muted, fontSize: '11px', whiteSpace: 'pre-wrap' } }, transMsg),
+          ),
+          trans && trans.file
+            ? h('div', { style: { ...S.muted, marginTop: '4px', fontSize: '11px' } },
+                '配置文件:' + trans.file)
+            : null,
         ),
         h('div', { style: { ...S.box, marginTop: '10px' } },
           h('div', { style: { fontWeight: 600, marginBottom: '6px' } }, '界面选项'),
@@ -1253,12 +1500,38 @@ window.__ModuleLoader__.load({
 
       // 与桌面版一致的操作状态
       const [mode, setMode] = React.useState('box');
-      const [vertical, setVertical] = React.useState(true);
+      const [kind, setKind] = React.useState('body');
+      const [cover, setCover] = React.useState('cover');
+      const [gpu, setGpu] = React.useState(false);
+      // 每种类型各自记住「原文处理/GPU」(仅本次页面会话内)
+      const KIND_DEFAULT_COVER = { body: 'cover', plain: 'overlay', title: 'cover' };
+      const kindMemRef = React.useRef({
+        body: { cover: 'cover', gpu: false },
+        plain: { cover: 'overlay', gpu: false },
+        title: { cover: 'cover', gpu: false },
+      });
+      const pickKind = (k) => {
+        const m = kindMemRef.current[k] || {};
+        setKind(k);
+        setCover(m.cover || KIND_DEFAULT_COVER[k] || 'cover');
+        setGpu(!!m.gpu);
+      };
+      const pickCover = (c) => {
+        setCover(c);
+        kindMemRef.current[kind] = { ...(kindMemRef.current[kind] || {}), cover: c, gpu };
+      };
+      const pickGpu = (v) => {
+        setGpu(v);
+        kindMemRef.current[kind] = { ...(kindMemRef.current[kind] || {}), cover, gpu: v };
+      };
+      const [dirMode, setDirMode] = React.useState('auto');
       const [size, setSize] = React.useState('20');
-      const [sfx, setSfx] = React.useState(false);
-      const [erase, setErase] = React.useState(true);
+      const [autoSize, setAutoSize] = React.useState(true);
       const [bodyStyle, setBodyStyle] = React.useState('body_classic');
       const [sfxStyle, setSfxStyle] = React.useState('sfx_classic');
+      const [titleStyle, setTitleStyle] = React.useState('title_bold');
+      const [fontByKind, setFontByKind] = React.useState({ body: '', sfx: '', title: '' });
+      const [styleOpen, setStyleOpen] = React.useState(true);
       const [stylePresets, setStylePresets] = React.useState(null);
 
       // 文字样式预设
@@ -1268,8 +1541,10 @@ window.__ModuleLoader__.load({
           setStylePresets(ps);
           const body = ps.filter((p) => p.kind === 'body');
           const sfxList = ps.filter((p) => p.kind === 'sfx');
+          const title = ps.filter((p) => p.kind === 'title');
           if (body.length && !body.some((p) => p.id === bodyStyle)) setBodyStyle(body[0].id);
           if (sfxList.length && !sfxList.some((p) => p.id === sfxStyle)) setSfxStyle(sfxList[0].id);
+          if (title.length && !title.some((p) => p.id === titleStyle)) setTitleStyle(title[0].id);
         }).catch(() => setStylePresets([]));
       }, []);
 
@@ -1353,6 +1628,31 @@ window.__ModuleLoader__.load({
         }
       }
 
+      async function applyStyleAll() {
+        setMsg('正在应用到全部…');
+        try {
+          const d = await api('/status?folder=' + encodeURIComponent(folder));
+          const pages = (d.pages || []).filter((p) => p.boxes);
+          let n = 0;
+          for (const p of pages) {
+            const r = await api('/regions?folder=' + encodeURIComponent(folder)
+              + '&page=' + encodeURIComponent(p.page));
+            const boxes = (r.boxes || []).map((b) => {
+              const k = kindOfBox(b);
+              const nb = { ...b, style: k === 'title' ? titleStyle : (k === 'plain' ? sfxStyle : bodyStyle) };
+              if (fontByKind[k]) nb.font = fontByKind[k]; else delete nb.font;
+              return nb;
+            });
+            await api('/save', { folder, page: p.page, boxes, edits: [] });
+            n += boxes.length;
+          }
+          if (page) await loadPage(page);
+          setMsg(`已把样式应用到全部 ${pages.length} 页 / ${n} 个框 ✅`);
+        } catch (e) {
+          setMsg('应用到全部失败:' + String(e.message || e));
+        }
+      }
+
       async function run(step) {
         if (!folder) return;
         setLoading(true);
@@ -1433,10 +1733,18 @@ window.__ModuleLoader__.load({
           if (e.ctrlKey && (k === 's' || k === 'S')) { e.preventDefault(); savePage(); return; }
           if (k === 'b' || k === 'B') { setMode('box'); return; }
           if (k === 'p' || k === 'P') { setMode('paint'); return; }
-          if (k === 'v' || k === 'V') { setVertical(true); return; }
-          if (k === 'h' || k === 'H') { setVertical(false); return; }
-          if (k === 'n' || k === 'N') { setSfx((v) => !v); return; }
-          if (k === 'e' || k === 'E') { setErase((v) => !v); return; }
+          if (k === 'v' || k === 'V') { setDirMode('v'); return; }
+          if (k === 'h' || k === 'H') { setDirMode('h'); return; }
+          if (k === 'a' || k === 'A') { setDirMode('auto'); return; }
+          if (k === 'n' || k === 'N') {
+            const order = ['body', 'plain', 'title'];
+            pickKind(order[(order.indexOf(kind) + 1) % 3]);
+            return;
+          }
+          if (k === 'e' || k === 'E') {
+            pickCover(cover === 'overlay' ? 'erase' : (cover === 'erase' ? 'cover' : 'overlay'));
+            return;
+          }
           const pages = info ? info.pages : [];
           const idx = pages.findIndex((p) => p.page === page);
           if (k === 'ArrowLeft' && idx > 0) { loadPage(pages[idx - 1].page); }
@@ -1596,43 +1904,101 @@ window.__ModuleLoader__.load({
               : null,
           ),
           h('div', { style: S.row },
+            h('span', { style: { ...S.muted, fontSize: '11px' } }, '模式:'),
             h('button', { type: 'button', style: mode === 'box' ? S.btnOn : S.btn, title: 'B', onClick: () => setMode('box') }, '框选(B)'),
-            h('button', { type: 'button', style: mode === 'paint' ? S.btnOn : S.btn, title: 'P', onClick: () => setMode('paint') }, '涂抹(P)'),
-            h('button', { type: 'button', style: vertical ? S.btnOn : S.btn, title: 'V', onClick: () => setVertical(true) }, '竖(V)'),
-            h('button', { type: 'button', style: !vertical ? S.btnOn : S.btn, title: 'H', onClick: () => setVertical(false) }, '横(H)'),
-            h('span', null, '字号'),
+            h('button', { type: 'button', style: mode === 'paint' ? S.btnOn : S.btn, title: 'P', onClick: () => setMode('paint') }, '自由框选(P)'),
+            h('span', { style: { ...S.muted, fontSize: '11px', marginLeft: '6px' } }, '类型:'),
+            [['body', '正文'], ['plain', '无框正文/拟声词'], ['title', '标题']].map(([k, name]) =>
+              h('button', {
+                key: k, type: 'button',
+                style: kind === k ? S.btnOn : S.btn,
+                onClick: () => pickKind(k),
+              }, name)),
+          ),
+          h('div', { style: S.row },
+            h('span', { style: { ...S.muted, fontSize: '11px' } }, '原文处理:'),
+            [['overlay', '译文直盖'], ['erase', '抹除'], ['cover', '色块覆盖']].map(([c, name]) =>
+              h('button', {
+                key: c, type: 'button', style: cover === c ? S.btnOn : S.btn,
+                onClick: () => pickCover(c),
+              }, name)),
+            cover === 'erase'
+              ? h('label', { style: { ...S.muted, fontSize: '11px', marginLeft: '4px' } },
+                  h('input', {
+                    type: 'checkbox', checked: gpu,
+                    onChange: (e) => pickGpu(e.target.checked),
+                  }), ' GPU去字')
+              : null,
+            h('span', { style: { ...S.muted, fontSize: '11px', marginLeft: '10px' } }, '字号'),
             h('input', { style: { ...S.input, flex: '0 0 52px', minWidth: 0 }, value: size, onChange: (e) => setSize(e.target.value) }),
-            h('button', { type: 'button', style: sfx ? S.btnOn : S.btn, title: 'N', onClick: () => setSfx((v) => !v) }, sfx ? '拟声(N)✓' : '拟声(N)'),
-            h('button', { type: 'button', style: erase ? S.btnOn : S.btn, title: 'E', onClick: () => setErase((v) => !v) }, erase ? '抹除(E)✓' : '抹除(E)'),
+            h('label', { style: { ...S.muted, fontSize: '11px', marginLeft: '4px' } },
+              h('input', { type: 'checkbox', checked: autoSize, onChange: (e) => setAutoSize(e.target.checked) }), ' 自动字号'),
+            h('span', { style: { ...S.muted, fontSize: '11px', marginLeft: '10px' } }, '方向:'),
+            [['auto', '自动检测'], ['v', '竖排'], ['h', '横排']].map(([d, name]) =>
+              h('button', {
+                key: d, type: 'button', style: dirMode === d ? S.btnOn : S.btn,
+                onClick: () => setDirMode(d),
+              }, name)),
           ),
-          h('div', { style: { ...S.row, alignItems: 'center' } },
-            h('span', { style: { fontSize: '11px', color: '#888', width: '54px' } }, '正文样式'),
-            h(StyleChips, {
-              presets: (stylePresets || []).filter((p) => p.kind === 'body'),
-              value: bodyStyle, onChange: setBodyStyle, glyph: '正',
-            }),
-          ),
-          h('div', { style: { ...S.row, alignItems: 'center' } },
-            h('span', { style: { fontSize: '11px', color: '#888', width: '54px' } }, '拟声样式'),
-            h(StyleChips, {
-              presets: (stylePresets || []).filter((p) => p.kind === 'sfx'),
-              value: sfxStyle, onChange: setSfxStyle, glyph: '音',
-            }),
+          h('div', { style: S.row },
             h('button', {
-              type: 'button', style: { ...S.btn, marginLeft: '6px' },
-              title: '把当前样式应用到本页所有框',
-              onClick: () => {
-                setBoxes((prev) => prev.map((b) => ({
-                  ...b,
-                  style: b.sfx ? sfxStyle : bodyStyle,
-                })));
-                setMsg('已把样式应用到本页所有框,点「保存」生效');
-              },
-            }, '应用到本页'),
+              type: 'button', style: S.btn, title: '收起/展开文字样式栏',
+              onClick: () => setStyleOpen((v) => !v),
+            }, styleOpen ? '样式 ▾' : '样式 ▸'),
+            styleOpen ? null : h('span', { style: { ...S.muted, fontSize: '11px' } }, '(样式栏已收起)'),
           ),
+          styleOpen ? h(React.Fragment, null,
+            [['body', '正文样式', '正', bodyStyle, setBodyStyle],
+             ['sfx', '拟声样式', '音', sfxStyle, setSfxStyle],
+             ['title', '标题样式', '标', titleStyle, setTitleStyle]].map(([k, label, glyph, val, setter]) =>
+              h('div', { key: k, style: { ...S.row, alignItems: 'center' } },
+                h('span', { style: { fontSize: '11px', color: '#888', width: '54px' } }, label),
+                h(StyleChips, {
+                  presets: (stylePresets || []).filter((p) => p.kind === k),
+                  value: val, onChange: setter, glyph, font: fontByKind[k],
+                }),
+                h('span', { style: { fontSize: '11px', color: '#888', marginLeft: '2px' } }, '字体'),
+                h('select', {
+                  style: {
+                    flex: '0 0 108px', minWidth: '108px', padding: '2px',
+                    borderRadius: '5px', border: '1px solid rgba(128,128,128,0.45)',
+                    background: '#ffffff', color: '#111111', fontSize: '12px',
+                  },
+                  value: fontByKind[k] || '',
+                  onChange: (e) => setFontByKind((f) => ({ ...f, [k]: e.target.value })),
+                  title: '该组字体(共 ' + WEB_FONT_NAMES.length + ' 项,选中后预览同步)',
+                }, [''].concat(WEB_FONT_NAMES).map((n) =>
+                  h('option', {
+                    key: n || '__default',
+                    value: n,
+                    style: { fontFamily: cssFont(n) || 'inherit', background: '#ffffff', color: '#111111' },
+                  }, n || '默认字体'))),
+              )),
+            h('div', { style: S.row },
+              h('button', {
+                type: 'button', style: S.btn, marginLeft: '54px',
+                title: '把三类样式分别应用到本页同类型框',
+                onClick: () => {
+                  setBoxes((prev) => prev.map((b) => {
+                    const k = kindOfBox(b);
+                    const nb = { ...b, style: k === 'title' ? titleStyle : (k === 'plain' ? sfxStyle : bodyStyle) };
+                    if (fontByKind[k]) nb.font = fontByKind[k]; else delete nb.font;
+                    return nb;
+                  }));
+                  setMsg('已把样式应用到本页(同类型),点「保存」生效');
+                },
+              }, '应用到本页'),
+              h('button', {
+                type: 'button', style: S.btn,
+                title: '把三类样式分别应用到全书同类型框(可能较慢)',
+                onClick: () => applyStyleAll(),
+              }, '应用到全部'),
+            ),
+          ) : null,
           pageData ? h(Marker, {
             folder, page, data: pageData,
-            mode, setMode, vertical, size, sfx, erase, bodyStyle, sfxStyle,
+            mode, setMode, kind, cover, gpu, dirMode, size, autoSize,
+            bodyStyle, sfxStyle, titleStyle, fontByKind,
             onBoxesChange: (bs) => {
               setBoxes(bs);
               const same = pageData && JSON.stringify(bs) === JSON.stringify(pageData.boxes || []);
@@ -1644,7 +2010,8 @@ window.__ModuleLoader__.load({
             },
           }) : null,
           h('div', { style: { ...S.muted, marginTop: '4px' } },
-            '快捷键:B 框选 · P 涂抹 · V 竖 · H 横 · N 拟声 · E 抹除 · Ctrl+Z 撤销 · Ctrl+S 保存 · ←/→ 翻页 · 右键删框 · 双击改字'),
+            '操作:左键拖框/自由框选 · 单击框=选中(改设置实时写回) · 右键删框 · 双击改字 · '
+            + 'N=切类型 · E=切原文处理(直盖→抹除→覆盖) · V/H=竖/横 · A=自动 · Ctrl+Z 撤销 · Ctrl+S 保存 · ←/→ 翻页'),
         ) : null,
         log ? h('div', { style: S.log }, log) : null,
       );

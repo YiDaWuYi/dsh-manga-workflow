@@ -15,6 +15,7 @@ mode:
 输出: 人类可读报告 + 最后一行 JSON 摘要 {"ok": bool, "issues": n}
 """
 import sys, os, json
+import re
 import numpy as np
 from PIL import Image
 
@@ -119,6 +120,31 @@ def check_translation(src, regions):
             # 框异常小
             if int(b.get('w', 0)) < 6 or int(b.get('h', 0)) < 6:
                 warns.append(f"{p}[{i}]: 框异常小 {b.get('w')}x{b.get('h')}")
+            # ---- 译文质量自检(抓"明显不对"的译文)----
+            src_text = str(texts[i]) if i < len(texts) else ''
+            # 纯标点/符号的译文(如「……」「！！」)是合法的,跳过质量检查
+            only_punct = not re.search(r'[A-Za-z0-9\u3040-\u30ff\u4e00-\u9fff]', zh)
+            if src_text.strip() and not only_punct:
+                # ① 译文里没有中文(大概率没翻译/翻译失败)
+                if not re.search(r'[\u4e00-\u9fff]', zh):
+                    issues.append(("error", f"{p}[{i}]: 译文没有中文,疑似翻译失败: {zh[:40]!r}"))
+                # ② 翻译引擎/占位符残留
+                elif re.search(r'MyMemory|Google|translat|@@|\{\}|<\w+>', zh, re.I):
+                    warns.append(f"{p}[{i}]: 译文疑似残留引擎文本: {zh[:40]!r}")
+                # ③ 长度比例异常(太长/太短)
+                else:
+                    ls, lz = len(src_text.strip()), len(zh.strip())
+                    if lz > max(60, ls * 4):
+                        warns.append(f"{p}[{i}]: 译文过长({lz} 字,原文 {ls} 字),可能翻错")
+                    elif ls >= 12 and lz <= max(1, int(ls * 0.15)):
+                        warns.append(f"{p}[{i}]: 译文过短({lz} 字,原文 {ls} 字),可能翻错")
+            # ④ 同一页大量重复译文
+        zh_list_page = [str(x).strip() for x in t if str(x).strip()]
+        if zh_list_page:
+            from collections import Counter as _C
+            for val, cnt in _C(zh_list_page).items():
+                if cnt >= 3 and len(val) <= 6:
+                    warns.append(f"{p}: 有 {cnt} 个框译文相同 {val!r},疑似翻译失败")
     for p in pages:
         if _page_ext(src, p) is None:
             issues.append(("error", f"{p}: regions 里有,但找不到对应图片"))

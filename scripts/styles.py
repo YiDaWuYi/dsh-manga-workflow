@@ -44,8 +44,154 @@ PRESETS = load()
 BY_ID = {p['id']: p for p in PRESETS}
 BODY_IDS = [p['id'] for p in PRESETS if p.get('kind') == 'body']
 SFX_IDS = [p['id'] for p in PRESETS if p.get('kind') == 'sfx']
+TITLE_IDS = [p['id'] for p in PRESETS if p.get('kind') == 'title']
 DEFAULT_BODY = BODY_IDS[0] if BODY_IDS else 'body_classic'
 DEFAULT_SFX = SFX_IDS[0] if SFX_IDS else 'sfx_classic'
+DEFAULT_TITLE = TITLE_IDS[0] if TITLE_IDS else 'title_bold'
+
+KINDS = ('body', 'plain', 'title')
+KIND_LABEL = {'body': '正文', 'plain': '无框正文/拟声词', 'title': '标题'}
+KIND_DEFAULT_STYLE = {'body': DEFAULT_BODY, 'plain': DEFAULT_SFX, 'title': DEFAULT_TITLE}
+
+
+def kind_of(box):
+    """框类型:body=正文(绿框) / plain=无框正文·拟声词(红框) / title=标题(蓝框)。
+
+    兼容旧数据:有 kind 用它;否则 sfx/nobox/points 视为 plain,其余 body。
+    """
+    b = box or {}
+    k = b.get('kind')
+    if k in KINDS:
+        return k
+    if b.get('title'):
+        return 'title'
+    if b.get('sfx') or b.get('nobox') or b.get('points'):
+        return 'plain'
+    return 'body'
+
+
+COVER_MODES = ('overlay', 'erase', 'cover')
+COVER_LABEL = {'overlay': '直盖', 'erase': '抹除', 'cover': '覆盖'}
+
+
+def cover_mode(box):
+    """原文处理方式。
+
+    overlay = 译文直盖(不处理原文,直接叠字)
+    erase   = 抹除(按需修复/擦除原文)
+    cover   = 色块覆盖(用框边缘颜色盖住原文)
+
+    旧数据保持原行为:erase=False→直盖;否则抹除;上一版 'keep' 视作直盖。
+    """
+    b = box or {}
+    m = b.get('cover')
+    if m == 'keep':
+        return 'overlay'
+    if m in COVER_MODES:
+        return m
+    if 'erase' in b:
+        return 'erase' if b.get('erase') else 'overlay'
+    return 'cover' if kind_of(b) in ('body', 'title') else 'erase'
+
+
+def gpu_of(box):
+    """该框抹除时是否用 GPU(LaMa)去字。"""
+    b = box or {}
+    if 'gpu' in b:
+        return bool(b.get('gpu'))
+    return bool(b.get('lama'))
+
+
+def sample_cover_color(img, box, margin=8):
+    """取框边缘一圈像素的中位色,作为「色块覆盖」的颜色(取不到用白色)。"""
+    try:
+        import numpy as np
+        a = np.asarray(img.convert('RGB'))
+        H, W = a.shape[:2]
+        x, y = int(box.get('x', 0)), int(box.get('y', 0))
+        w, h = int(box.get('w', 1)), int(box.get('h', 1))
+        x0, y0 = max(0, x - margin), max(0, y - margin)
+        x1, y1 = min(W, x + w + margin), min(H, y + h + margin)
+        px = max(1, margin // 2)
+        strips = [
+            a[y0:min(y0 + px, y1), x0:x1],
+            a[max(y1 - px, y0):y1, x0:x1],
+            a[y0:y1, x0:min(x0 + px, x1)],
+            a[y0:y1, max(x1 - px, x0):x1],
+        ]
+        vals = [st.reshape(-1, 3) for st in strips if st.size]
+        if not vals:
+            return (255, 255, 255)
+        med = np.median(np.concatenate(vals, axis=0), axis=0)
+        return (int(med[0]), int(med[1]), int(med[2]))
+    except Exception:
+        return (255, 255, 255)
+
+
+def paint_cover(draw, box, color):
+    """用色块盖住原文。
+
+    框选框:填满矩形;
+    涂抹(自由框选)框:只按笔画围出的形状覆盖(沿笔画粗线 + 多边形),
+    不会把整个外接矩形涂掉(v1.0 的顽固问题)。
+    """
+    x, y = int(box.get('x', 0)), int(box.get('y', 0))
+    w, h = int(box.get('w', 1)), int(box.get('h', 1))
+    pts = box.get('points')
+    if pts:
+        pl = [tuple(p) for p in pts]
+        # 笔画粗细:取框短边的 1/4,至少 10px
+        brush = max(10, int(min(w or 20, h or 20) / 4))
+        if len(pl) >= 3:
+            draw.polygon(pl, fill=color)
+        if len(pl) >= 2:
+            draw.line(pl, fill=color, width=brush, joint='curve')
+        elif pl:
+            draw.ellipse([pl[0][0] - brush, pl[0][1] - brush,
+                          pl[0][0] + brush, pl[0][1] + brush], fill=color)
+        return
+    draw.rectangle([x, y, x + w, y + h], fill=color)
+
+
+def draw_title(draw, text, box, size, st=None):
+    """标题:居中 + 加粗 + 自动缩放适配框宽(单行)。"""
+    text = '' if text is None else str(text).strip()
+    if not text:
+        return False
+    st = dict(st or {})
+    x, y = int(box.get('x', 0)), int(box.get('y', 0))
+    w, h = max(8, int(box.get('w', 1))), max(8, int(box.get('h', 1)))
+    s = max(8, int(size or 20))
+    font = load_font(s, bold=True, family=st.get('font'))
+    try:
+        tw = draw.textlength(text, font=font)
+    except Exception:
+        tw = s * len(text)
+    maxw = max(8, int(w * 0.96))
+    guard = 0
+    while tw > maxw and s > 8 and guard < 400:
+        s -= 1
+        guard += 1
+        font = load_font(s, bold=True, family=st.get('font'))
+        try:
+            tw = draw.textlength(text, font=font)
+        except Exception:
+            tw = s * len(text)
+    th = s
+    tx = x + (w - tw) / 2.0
+    ty = y + (h - th) / 2.0
+    k = stroke_px(st, s)
+    fill = st.get('fill') or (0, 0, 0)
+    sf = st.get('stroke_fill')
+    sh = st.get('shadow')
+    if sh:
+        dx, dy, col = sh
+        draw.text((tx + dx, ty + dy), text, font=font, fill=col,
+                  stroke_width=(k + 2 if st.get('art') else k), stroke_fill=col)
+    if st.get('art'):
+        draw.text((tx, ty), text, font=font, fill=fill, stroke_width=k + 2, stroke_fill=sf or fill)
+    draw.text((tx, ty), text, font=font, fill=fill, stroke_width=k, stroke_fill=sf)
+    return True
 
 
 def preset(style_id):
@@ -66,13 +212,17 @@ def _rgb(v, default=None):
 def resolve(box):
     """把框字段解析成渲染参数(兼容没有 style 字段的旧数据)。"""
     box = box or {}
-    p = BY_ID.get(box.get('style') or '')
+    sid = box.get('style') or ''
+    if not sid and box.get('kind') in KINDS:
+        sid = KIND_DEFAULT_STYLE[box.get('kind')]
+    p = BY_ID.get(sid)
     if p:
         sh = p.get('shadow')
         shadow = None
         if isinstance(sh, (list, tuple)) and len(sh) >= 5:
             shadow = (int(sh[0]), int(sh[1]), (int(sh[2]), int(sh[3]), int(sh[4])))
         return {
+            'font': box.get('font') or p.get('font'),
             'fill': _rgb(p.get('fill'), (0, 0, 0)),
             'bold': bool(p.get('bold')),
             'stroke': max(0, int(p.get('stroke') or 0)),
@@ -98,6 +248,7 @@ def resolve(box):
     if is_sfx:
         shadow = (2, 3, (55, 55, 55))
     return {
+        'font': box.get('font'),
         'fill': fill,
         'bold': bool(box.get('bold', is_sfx)),
         'stroke': stroke,
@@ -110,14 +261,36 @@ def resolve(box):
 # ---------------- 绘制原语(PIL) ----------------
 _FONT_CACHE = {}
 
+# 可选字体(界面里显示的名字 → Windows 字体文件候选)
+FONT_FAMILIES = [
+    ('默认', None),
+    ('微软雅黑', [r'C:\Windows\Fonts\msyh.ttc', r'C:\Windows\Fonts\msyhbd.ttc']),
+    ('宋体', [r'C:\Windows\Fonts\simsun.ttc']),
+    ('黑体', [r'C:\Windows\Fonts\simhei.ttf']),
+    ('楷体', [r'C:\Windows\Fonts\simkai.ttf']),
+    ('仿宋', [r'C:\Windows\Fonts\simfang.ttf']),
+    ('华文仿宋', [r'C:\Windows\Fonts\STFANGSO.TTF']),
+    ('华文楷体', [r'C:\Windows\Fonts\STKAITI.TTF']),
+    ('华文琥珀', [r'C:\Windows\Fonts\STHUPO.TTF']),
+    ('瘦金体', [r'C:\Windows\Fonts\STXINGKA.TTF']),
+    ('隶书', [r'C:\Windows\Fonts\SIMLI.TTF']),
+    ('幼圆', [r'C:\Windows\Fonts\SIMYOU.TTF']),
+]
+FONT_NAMES = [n for n, _ in FONT_FAMILIES if n != '默认']
+_FONT_BY_NAME = {n: fs for n, fs in FONT_FAMILIES if fs}
 
-def load_font(size, bold=False, art=False):
-    """漫画用字体:艺术字优先琥珀/行楷;普通优先雅黑(粗/常规)。"""
-    key = (int(size), bool(bold), bool(art))
+
+def load_font(size, bold=False, art=False, family=None):
+    """漫画用字体:可指定字体族(宋体/瘦金体…),否则艺术字优先琥珀/行楷、普通优先雅黑。"""
+    key = (int(size), bool(bold), bool(art), family or '')
     if key in _FONT_CACHE:
         return _FONT_CACHE[key]
     from PIL import ImageFont
     fps = []
+    if family:
+        fs = _FONT_BY_NAME.get(family)
+        if fs:
+            fps += list(fs)
     if art:
         fps += [r'C:\Windows\Fonts\STHUPO.TTF', r'C:\Windows\Fonts\STXINGKA.TTF',
                 r'C:\Windows\Fonts\STLITI.TTF', r'C:\Windows\Fonts\simkai.ttf']
@@ -139,11 +312,12 @@ def load_font(size, bold=False, art=False):
 
 
 def stroke_px(st, s):
-    """描边宽度:样式里按字号 20 定义,实际按字号轻微缩放。"""
+    """描边宽度:按字号缩放,小字号时收敛(避免小字被描边糊成一团)。"""
     k = int(st.get('stroke') or 0)
     if k <= 0:
         return 0
-    return max(1, int(round(k * max(1.0, s / 24.0))))
+    scale = max(0.55, min(1.25, s / 30.0))
+    return max(1, int(round(k * scale)))
 
 
 def draw_styled(draw, xy, ch, font, st, s):
