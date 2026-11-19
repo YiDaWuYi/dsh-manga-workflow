@@ -242,7 +242,7 @@ DeepSeek Harness 的漫画汉化工作流插件:本地 OCR(日/韩/英)、GPU �
 ### 方式一:从 GitHub Release tarball(推荐)
 
 ```sh
-dsh plugin --profile <你的profile> add https://github.com/YiDaWuYi/dsh-manga-workflow/releases/download/v1.10.0/dsh-manga-workflow-1.10.0.tgz
+dsh plugin --profile <你的profile> add https://github.com/YiDaWuYi/dsh-manga-workflow/releases/download/v1.10.1/dsh-manga-workflow-1.10.1.tgz
 ```
 
 或在 DSH 的 **插件 → 添加插件** 里填这个 tarball 地址。
