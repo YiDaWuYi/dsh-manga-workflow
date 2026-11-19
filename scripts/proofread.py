@@ -154,6 +154,50 @@ def check_translation(src, regions):
     return issues, warns
 
 
+def _iou(a, b):
+    x0 = max(a['x'], b['x']); y0 = max(a['y'], b['y'])
+    x1 = min(a['x'] + a['w'], b['x'] + b['w']); y1 = min(a['y'] + a['h'], b['y'] + b['h'])
+    if x1 <= x0 or y1 <= y0:
+        return 0.0
+    inter = (x1 - x0) * (y1 - y0)
+    u = a['w'] * a['h'] + b['w'] * b['h'] - inter
+    return inter / u if u > 0 else 0.0
+
+
+def _img_size(folder, page):
+    import glob
+    for ext in ('.webp', '.png', '.jpg', '.jpeg'):
+        fs = glob.glob(os.path.join(folder, page + ext))
+        if fs:
+            try:
+                from PIL import Image
+                with Image.open(fs[0]) as im:
+                    return im.size
+            except Exception:
+                return None
+    return None
+
+
+def structural_checks(folder, regions, ocr):
+    """结构问题:大框少字(疑似漏识别) + 重复/重叠框。返回问题列表。"""
+    out = []
+    for pg, boxes in regions.items():
+        texts = ocr.get(pg) or []
+        w, h = _img_size(folder, pg) or (0, 0)
+        page_area = float(w * h) if w and h else 0
+        for i, b in enumerate(boxes):
+            t = str(texts[i] if i < len(texts) else '').strip()
+            eff = len([c for c in t if c not in '．.…‥・,、。!?！？~～-—「」『』()（）[]【】:：;；\"' ])
+            area = float(b.get('w', 0)) * float(b.get('h', 0))
+            big = (page_area and area / page_area >= 0.02) or (b.get('w', 0) >= 150 and b.get('h', 0) >= 120)
+            if big and eff <= 2:
+                out.append('[问题] %s[%d] 框很大但有效字数仅 %d(可能漏识别/框错/重复框)' % (pg, i, eff))
+        for i in range(len(boxes)):
+            for j in range(i + 1, len(boxes)):
+                if _iou(boxes[i], boxes[j]) >= 0.6:
+                    out.append('[问题] %s[%d] 与 [%d] 框高度重叠(重复框?建议删一个)' % (pg, i, j))
+    return out
+
 def check_pre(src, mode='both'):
     regions = _load(os.path.join(src, 'regions.json'))
     if not regions:
@@ -237,6 +281,14 @@ def main():
         print(f"[提示] {msg}")
     summary = {"stage": stage, "mode": mode, "ok": len(issues) == 0,
                "issues": len(issues), "warns": len(warns)}
+    try:
+        _struct = structural_checks(src, _load(os.path.join(src, 'regions.json')), _load(os.path.join(src, 'ocr_text.json')))
+        if _struct:
+            print('  [提示] 结构性疑点 %d 条:' % len(_struct), flush=True)
+            for _m in _struct[:40]:
+                print('   ' + _m, flush=True)
+    except Exception as _e:
+        print('  [提示] 结构校验跳过: %s' % _e, flush=True)
     print(json.dumps(summary, ensure_ascii=False))
     return 0 if summary["ok"] else 1
 

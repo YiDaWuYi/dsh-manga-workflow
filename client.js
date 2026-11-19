@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-manga-workflow',
   factory(require) {
   // 版本号(发布时同步 package.json / 桌面端 mark_tool.py)
-  const APP_VERSION = 'V1.10.1';
+  const APP_VERSION = 'V1.11';
 
     const React = require('react');
     const h = React.createElement;
@@ -522,7 +522,7 @@ window.__ModuleLoader__.load({
       ['双击改字', '弹窗改原文/译文', '弹窗改原文/译文'],
       ['自动标框', '❌ 不支持', '✅ 支持(自动检测气泡)'],
       ['一键识别', '❌ 不支持', '✅ 支持(标框+OCR)'],
-      ['重标同步', '❌ 不支持', '✅ 整本 OCR→翻译→校对'],
+      ['同步(配对)', '❌ 不支持', '✅ 只对齐原文↔译文配对'],
       ['引擎帮助/修复', '❌ 不支持', '✅ 检测 + 复制修复关键词'],
       ['翻译设置', '✅ 设置→文字翻译引擎(含 DSH 模型/免Key)', '✅ 引擎多选 + AI 接口 + 代理'],
       ['校对模式', '固定「原文+译文」', '✅ 可切「只校原文」'],
@@ -540,6 +540,7 @@ window.__ModuleLoader__.load({
       ['视觉引擎(设置)', '✅ 两端共用同一份配置', '✅ 同一份配置'],
       ['侧边栏/提示开关', '✅ 设置里可开关(共享)', '✅ 改同一份共享配置'],
       ['互相启动', '✅ 一键「启动桌面版」', '—'],
+      ['确认嵌字', '✅ 先自动校对 → 弹窗确认 → 嵌字 → 自动校对输出 → 报告', '✅ 全自动按钮(不含嵌字)+ 嵌字'],
       ['长任务', '异步任务 + 日志轮询', '后台线程 + 状态栏流式进度'],
       ['中断任务', '❌ 只能等它跑完', '✅「取消当前任务」杀进程树'],
     ];
@@ -562,7 +563,8 @@ window.__ModuleLoader__.load({
         '0. (可选)先到「设置」配好视觉引擎 —— 想让 AI 帮你看图才需要',
         '1. 启动页点「浏览…」选文件夹,或直接粘贴路径 → 开始',
         '2. 工作台里画框(框选/自由框选),选好类型(正文/拟声/标题)、原文处理、方向、字号',
-        '3. 点 OCR 识别原文 → 4. 点 翻译 → 5. 点 校对 → 6. 点 嵌字',
+        '3. 点 OCR 识别原文 → 4. 点 翻译(或「单页识图翻译」:当前页交视觉引擎读原文 + DSH 模型翻译)',
+        '5. 点「确认嵌字」(会先自动校对,确认后嵌字)',
         '7. 改动后点「保存」(Ctrl+S);换页会丢掉未保存的改动',
         '8. 需要精细标注时点「启动桌面版」切到桌面工具(桌面端可「取消当前任务」)',
       ];
@@ -586,6 +588,8 @@ window.__ModuleLoader__.load({
         '',
         '【界面选项】(写入 ~/.manga-workflow/settings.json)',
         '· DSH 侧边栏:是否显示「漫画工作台」入口(双端共享)',
+        '  · 关闭后侧边栏隐藏;之后若要启动嵌字流程(确认嵌字),需在 DSH 对话里手动请求启动嵌字,',
+        '    或重新打开侧边栏;关闭状态下桌面端「确认嵌字」也会提示面板不可用。',
         '· 启动提示弹窗:输入框下方那条「已就绪」提示(双端共享,默认开)',
         '· 记忆上次路径:网页端与桌面端各自独立控制',
         '',
@@ -603,6 +607,15 @@ window.__ModuleLoader__.load({
         '· 仅空框(默认)—— 只补完全没认出来的框,当安全网用,几乎不花钱',
         '· 空框 + 极短 —— 有效字数 < 阈值也重读(标点、省略号不计入字数)',
         '· 全部重读 —— 每个有字的框都重读一遍,最贵',
+        '',
+        '【短句自动兜底】(默认开)',
+        '· 有效字数 ≤5(不含标点)的框也会自动重读;漫画短句最容易被漏字',
+        '· 设置里可改字数或取消勾选关闭',
+        '',
+        '【已兜底标记】(不重复花钱)',
+        '· 处理过的框记在书的 ocr_fallback_done.json(按 页+序号+框坐标)',
+        '· 重复跑 OCR 时同位置直接跳过;框移动/重标才会重跑',
+        '· 想强制重跑:命令行加 --force',
         '',
         '【建议用法】',
         '1. 平时保持「仅空框」;',
@@ -821,6 +834,19 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = React.useState(false);
       const [saved, setSaved] = React.useState(false);
       const [uiCfg, setUiCfg] = React.useState(null);
+      const [wsDir, setWsDir] = React.useState('');
+      const [wsExists, setWsExists] = React.useState(false);
+      const saveUi = async (patch) => {
+        try {
+          const r = await api('/settings/ui', patch);
+          if (r) setUiCfg(r);
+          const w = await api('/workspace/status');
+          setWsExists(!!(w && w.exists));
+          setMsg('界面设置已保存');
+        } catch (e) {
+          setMsg('保存失败:' + String(e.message || e));
+        }
+      };
       const [setup, setSetup] = React.useState(null);
       const [setupLog, setSetupLog] = React.useState('');
       const [setupBusy, setSetupBusy] = React.useState('');
@@ -830,6 +856,8 @@ window.__ModuleLoader__.load({
       const [transForm, setTransForm] = React.useState({ engines: [], proxy: '', baseUrl: '', model: '', key: '' });
       const [transMsg, setTransMsg] = React.useState('');
       const [ocrMin, setOcrMin] = React.useState('1');
+      const [ocrShortAuto, setOcrShortAuto] = React.useState(true);
+      const [ocrShortMax, setOcrShortMax] = React.useState('5');
       const [ocrMax, setOcrMax] = React.useState('30');
       const [priceIn, setPriceIn] = React.useState(() => {
         try { const p = JSON.parse(localStorage.getItem('manga-desk-prices') || '{}'); return p.in == null ? '' : String(p.in); } catch (e) { return ''; }
@@ -935,6 +963,8 @@ window.__ModuleLoader__.load({
           setOcrCfg(d);
           setOcrMin(String(d.minChars));
           setOcrMax(String(d.maxPerBook));
+          setOcrShortAuto(d.shortAuto !== false);
+          setOcrShortMax(String(d.shortMax || 5));
         }).catch(() => setOcrCfg(null));
       }, [folder]);
 
@@ -945,6 +975,8 @@ window.__ModuleLoader__.load({
             setOcrCfg(r.settings);
             setOcrMin(String(r.settings.minChars));
             setOcrMax(String(r.settings.maxPerBook));
+            setOcrShortAuto(r.settings.shortAuto !== false);
+            setOcrShortMax(String(r.settings.shortMax || 5));
           }
           setMsg('OCR 兜底设置已保存:'
             + (OCR_MODES.find(([v]) => v === (r.settings || {}).mode) || ['', '?'])[1]
@@ -964,7 +996,11 @@ window.__ModuleLoader__.load({
       }
 
       React.useEffect(() => {
-        api('/settings/ui').then(setUiCfg).catch(() => setUiCfg(null));
+        api('/settings/ui').then((d) => {
+          setUiCfg(d);
+          setWsDir(String((d && d.workspaceDir) || ''));
+          api('/workspace/status').then((w) => setWsExists(!!(w && w.exists))).catch(() => setWsExists(false));
+        }).catch(() => setUiCfg(null));
         api('/settings')
           .then((d) => {
             setModel(d.model || '');
@@ -1208,7 +1244,8 @@ window.__ModuleLoader__.load({
         h('div', { style: { ...S.box, marginTop: '10px' } },
           h('div', { style: { fontWeight: 600, marginBottom: '6px' } }, '界面选项'),
           h('div', { style: S.row },
-            h('span', { style: label }, 'DSH 侧边栏'),
+            h('span', { style: label, title: '关闭后侧边栏面板隐藏,嵌字流程需在 DSH 手动请求' }, 'DSH 侧边栏'),
+
             h('button', {
               type: 'button',
               style: uiCfg && uiCfg.sidebarEnabled ? S.btnOn : S.btn,
@@ -1218,7 +1255,10 @@ window.__ModuleLoader__.load({
             }, uiCfg ? (uiCfg.sidebarEnabled ? '已显示(点击关闭)' : '已隐藏(点击开启)') : '读取中…'),
             h('span', { style: { ...S.muted, fontSize: '11px' } }, '双端共享,桌面版的设置改的是同一项'),
           ),
-          h('div', { style: S.row },
+                    h('div', { style: { ...S.muted, fontSize: '10px', color: '#ffb020', marginBottom: '6px' } },
+            '⚠ 关闭侧边栏后漫画面板会隐藏;之后若要启动嵌字流程(确认嵌字),'
+            + '需在 DSH 对话里手动请求启动,或重新打开侧边栏。'),
+h('div', { style: S.row },
             h('span', { style: label }, '启动提示弹窗'),
             h('button', {
               type: 'button',
@@ -1243,6 +1283,32 @@ window.__ModuleLoader__.load({
           uiCfg && uiCfg.file
             ? h('div', { style: { ...S.muted, marginTop: '6px', fontSize: '11px' } }, `共享配置:${uiCfg.file}`)
             : null,
+        ),
+        h('div', { style: { ...S.box, marginTop: '10px' } },
+          h('div', { style: { fontWeight: 600, marginBottom: '6px' } }, '嵌字工作区(嵌字报告 / 对话汇报)'),
+          h('div', { style: { ...S.muted, fontSize: '11px', marginBottom: '6px' } },
+            '嵌字完成后会把结果报告写到这个目录(及其 manga_reports/),并生成待汇报队列;未设置时启动页/确认嵌字会提示。'),
+          h('div', { style: S.row },
+            h('input', {
+              style: { ...S.input, minWidth: '320px' },
+              placeholder: '例如 E:\\manga-workspace',
+              value: wsDir,
+              onChange: (e) => setWsDir(e.target.value),
+              onBlur: () => saveUi({ workspaceDir: wsDir.trim() }),
+            }),
+            h('button', {
+              type: 'button', style: S.btn,
+              onClick: async () => {
+                try {
+                  const r = await api('/workspace/ensure', { dir: wsDir.trim() });
+                  setWsExists(!!(r && r.ok));
+                  setMsg(r && r.ok ? ('工作区可用:' + r.dir + (r.existed ? '(已存在)' : '(已创建)')) : ('失败:' + ((r && r.error) || '未知')));
+                } catch (e) { setMsg('检查失败:' + String(e.message || e)); }
+              },
+            }, '检查 / 创建'),
+            h('span', { style: { ...S.muted, fontSize: '11px' } },
+              wsExists ? '● 已就绪' : '○ 未就绪'),
+          ),
         ),
         h('div', { style: { ...S.box, marginTop: '10px' } },
           h('div', { style: { fontWeight: 600, marginBottom: '6px' } }, 'OCR 兜底(视觉引擎)'),
@@ -1279,6 +1345,23 @@ window.__ModuleLoader__.load({
             }),
             h('span', { style: { ...S.muted, fontSize: '11px' } }, '框 —— 控制花费;每框约 ¥0.01~0.09(kimi-k3 官方价)'),
           ),
+          h('div', { style: S.row },
+            h('label', { style: { ...S.muted, fontSize: '11px' } },
+              h('input', {
+                type: 'checkbox', checked: ocrShortAuto, disabled: !ocrCfg,
+                onChange: (e) => saveOcrCfg({ shortAuto: e.target.checked }),
+              }), ' ≤'),
+            h('input', {
+              style: { ...S.input, flex: '0 0 52px', minWidth: 0 },
+              value: ocrShortMax,
+              onChange: (e) => setOcrShortMax(e.target.value),
+              onBlur: () => saveOcrCfg({ shortMax: Number(ocrShortMax) }),
+            }),
+            h('span', { style: { ...S.muted, fontSize: '11px' } },
+              '字的短句也自动兜底(默认开;短句常被 OCR 漏字,关掉可省钱)'),
+          ),
+          h('div', { style: { ...S.muted, fontSize: '10px', marginTop: '2px' } },
+            '已兜底过的框会记录在书的 ocr_fallback_done.json,重复跑 OCR 不再重复花钱。'),
           ocrCfg && ocrCfg.file
             ? h('div', { style: { ...S.muted, marginTop: '4px', fontSize: '11px' } }, `配置:${ocrCfg.file}`)
             : null,
@@ -1501,7 +1584,12 @@ window.__ModuleLoader__.load({
     /* ---------------- 工作台 ---------------- */
 
     function Workbench() {
-      const [view, setView] = React.useState('home');   // home | work
+      const [view, setView] = React.useState(() => {
+        try {
+          const v = localStorage.getItem('manga-desk-view');
+          return ['home', 'work', 'help', 'settings'].includes(v) ? v : 'home';
+        } catch (e) { return 'home'; }
+      });   // home | work | help | settings
       const [folder, setFolder] = React.useState(() => {
         try { return localStorage.getItem('manga-desk-folder') || ''; } catch { return ''; }
       });
@@ -1510,9 +1598,31 @@ window.__ModuleLoader__.load({
 
       const [info, setInfo] = React.useState(null);
       const [loading, setLoading] = React.useState(false);
+      const [wsExists, setWsExists] = React.useState(true);
+      const [verInfo, setVerInfo] = React.useState(null);
+      const [confirmDlg, setConfirmDlg] = React.useState(null);
       const [log, setLog] = React.useState('');
-      const [page, setPage] = React.useState('');
+      const [jumpNo, setJumpNo] = React.useState('');
+      const jumpPage = () => {
+        const pages = (info && info.pages) || [];
+        const n = parseInt(String(jumpNo).trim(), 10);
+        if (!pages.length) return;
+        if (!Number.isFinite(n)) { setMsg('请输入页码(1~' + pages.length + ')'); return; }
+        const k = Math.max(1, Math.min(pages.length, n));
+        loadPage(pages[k - 1].page);
+        setJumpNo('');
+      };
+      const [page, setPage] = React.useState(() => {
+        try { return localStorage.getItem('manga-desk-page') || ''; } catch (e) { return ''; }
+      });
       const [pageData, setPageData] = React.useState(null);
+      // 切换会话/重载时保留界面(view + 当前页)
+      React.useEffect(() => {
+        try { localStorage.setItem('manga-desk-view', view); } catch (e) { /* ignore */ }
+      }, [view]);
+      React.useEffect(() => {
+        try { if (page) localStorage.setItem('manga-desk-page', page); } catch (e) { /* ignore */ }
+      }, [page]);
       const [boxes, setBoxes] = React.useState([]);
       const [msg, setMsg] = React.useState('');
       const textEdits = React.useRef(new Map());
@@ -1576,6 +1686,8 @@ window.__ModuleLoader__.load({
       // 启动页:引擎检测 + 视觉引擎状态
       React.useEffect(() => {
         api('/infra').then(setInfra).catch(() => setInfra(null));
+        api('/workspace/status').then((w) => setWsExists(!!(w && w.exists))).catch(() => setWsExists(true));
+        api('/version-check').then(setVerInfo).catch(() => setVerInfo({ ok: false }));
         api('/settings')
           .then((d) => setVision({ model: d.model, apiBase: d.apiBase, apiKeySet: !!d.apiKeySet }))
           .catch(() => setVision(null));
@@ -1642,6 +1754,62 @@ window.__ModuleLoader__.load({
         }
       }
 
+      // 恢复上次界面:回到 work 视图且记住页时,自动加载该页(只做一次)
+      // 桌面端点了「确认嵌字」:轮询请求 → 切到该书并自动进入确认嵌字
+      const embedReqRef = React.useRef(false);
+      React.useEffect(() => {
+        let stop = false;
+        const tick = async () => {
+          if (stop || embedReqRef.current) return;
+          try {
+            const r = await api('/embed-request');
+            if (r && r.pending && r.folder) {
+              embedReqRef.current = true;
+              setFolder(r.folder);
+              try { localStorage.setItem('manga-desk-folder', r.folder); } catch (e) { /* ignore */ }
+              setView('work');
+              await refresh();
+            }
+          } catch (e) { /* 忽略 */ }
+        };
+        const t = setInterval(tick, 4000);
+        tick();
+        return () => { stop = true; clearInterval(t); };
+      }, []);
+      // 自动进入确认嵌字(等页面数据加载完成)
+      const autoConfirmRef = React.useRef(false);
+      React.useEffect(() => {
+        if (!embedReqRef.current || autoConfirmRef.current) return;
+        if (!pageData || loading) return;
+        autoConfirmRef.current = true;
+        setTimeout(() => { try { confirmEmbed(); } catch (e) { console.warn(e); } }, 300);
+      }, [pageData, loading]);
+
+      // 恢复成工作台视图但还没数据时,主动加载一次(修复「只剩顶部按钮」)
+      React.useEffect(() => {
+        try {
+          if (view !== 'work') return;
+          if (!folder) { setView('home'); return; }
+          if (!info && !loading) refresh();
+        } catch (e) { console.warn('[manga-workflow] 恢复工作台失败:', e); }
+      }, [view, folder]);
+
+      const restoredRef = React.useRef(false);
+      React.useEffect(() => {
+        try {
+          if (restoredRef.current || !info || !folder) return;
+          if (view !== 'work') return;
+          restoredRef.current = true;
+          const pages = (info && info.pages) || [];
+          if (!pageData && page && pages.some((r) => r && r.page === page)) {
+            const t = setTimeout(() => { try { loadPage(page); } catch (e) { /* ignore */ } }, 60);
+            return () => clearTimeout(t);
+          }
+        } catch (e) {
+          console.warn('[manga-workflow] 恢复界面失败:', e);
+        }
+      }, [info, folder, view]);
+
       async function loadPage(p) {
         if (dirtyRef.current) { try { await savePage({ auto: true }); } catch (e) { /* ignore */ } }
         setPage(p);
@@ -1678,23 +1846,136 @@ window.__ModuleLoader__.load({
         }
       }
 
+      async function runJob(step) {
+        const { jobId } = await api('/run', { folder, step });
+        let lastLog = '';
+        for (;;) {
+          await new Promise((r) => setTimeout(r, 1200));
+          const j = await api(`/job?id=${encodeURIComponent(jobId)}`);
+          if (j.log && j.log !== lastLog) { lastLog = j.log; setLog(j.log); }
+          if (j.status !== 'running') {
+            setLog(`[${step}] exit=${j.code}\n${j.log || ''}`);
+            return j;
+          }
+        }
+      }
+
       async function run(step) {
         if (!folder) return;
         setLoading(true);
         setLog(`正在执行 ${step}…`);
         try {
-          const { jobId } = await api('/run', { folder, step });
+          await runJob(step);
+          await refresh();
+          if (page) await loadPage(page);
+        } catch (e) {
+          setLog(String(e.message || e));
+        } finally {
+          setLoading(false);
+        }
+      }
+
+      // 单页识图翻译:当前页所有框交给视觉引擎读原文,再交 DSH 模型翻译
+      async function visionPage() {
+        if (!folder || !page || loading) return;
+        setLoading(true);
+        try {
+          if (dirtyRef.current) await savePage({ auto: true });
+          setLog('单页识图翻译中…');
+          const { jobId } = await api('/vision-page', { folder, page });
           let lastLog = '';
           for (;;) {
             await new Promise((r) => setTimeout(r, 1200));
             const j = await api(`/job?id=${encodeURIComponent(jobId)}`);
             if (j.log && j.log !== lastLog) { lastLog = j.log; setLog(j.log); }
-            if (j.status !== 'running') { setLog(`[${step}] exit=${j.code}\n${j.log || ''}`); break; }
+            if (j.status !== 'running') {
+              setLog(`[单页识图翻译] exit=${j.code}\n${j.log || ''}`);
+              break;
+            }
           }
           await refresh();
           if (page) await loadPage(page);
+          setMsg('单页识图翻译完成:' + page);
         } catch (e) {
-          setLog(String(e.message || e));
+          setMsg('单页识图翻译失败:' + String(e.message || e));
+        } finally {
+          setLoading(false);
+        }
+      }
+
+      // 确认嵌字:先跑一遍校对 → 弹窗确认 → 嵌字(脚本内自动做嵌字后校对)→ 结果
+      async function confirmEmbed() {
+        if (!folder || loading) return;
+        setLoading(true);
+        try {
+          if (dirtyRef.current) await savePage({ auto: true });
+          setMsg('嵌字前校对中…');
+          const r = await runJob('proofread');
+          const log = (r && r.log) || '';
+          const lines = log.split('\n').filter((l) => l.trim());
+          const issues = lines.filter((l) => l.startsWith('[问题]')).length;
+          const warns = lines.filter((l) => l.startsWith('[提示]')).length;
+          const summaryLine = lines.filter((l) => l.trim().startsWith('{')).slice(-1)[0] || '';
+          setMsg(`嵌字前校对完成:问题 ${issues} 条 / 提示 ${warns} 条`);
+          setConfirmDlg({
+            title: '确认嵌字',
+            body: `嵌字前校对:问题 ${issues} 条 / 提示 ${warns} 条`
+              + (summaryLine ? '\n' + summaryLine : '')
+              + '\n\n' + lines.slice(-10).join('\n')
+              + '\n\n确认后开始嵌字(嵌字结束会自动再校对一遍输出)。',
+            okText: '确认嵌字',
+            onOk: async () => { setConfirmDlg(null); await doEmbed(); },
+          });
+        } catch (e) {
+          setMsg('嵌字前校对失败:' + String(e.message || e));
+        } finally {
+          setLoading(false);
+        }
+      }
+
+      async function doEmbed() {
+        if (!folder) return;
+        setLoading(true);
+        try {
+          // 核实嵌字工作区(缺失则创建)
+          try {
+            const st = await api('/workspace/status');
+            if (!st || !st.exists) {
+              const r2 = await api('/workspace/ensure', {});
+              if (r2 && r2.ok) { setWsExists(true); setMsg('已创建工作区:' + r2.dir); }
+            }
+          } catch (e) { /* 工作区不影响嵌字 */ }
+          setMsg('嵌字中…');
+          const r = await runJob('embed');
+          await refresh();
+          if (page) await loadPage(page);
+          const ok = r && r.code === 0;
+          const log = (r && r.log) || '';
+          const lines = log.split('\n').filter((l) => l.trim());
+          setMsg(ok ? '嵌字完成(已自动校对输出)' : '嵌字完成但有错误,请看日志');
+          // 嵌字完成:提交结果表单 + 预览给用户
+          const repLine = lines.filter((l) => l.includes('[报告]') || l.includes('[工作区]')).join('\n');
+          const form = [
+            '书:' + folder,
+            '当前页:' + (page || '-'),
+            '退出码:' + (r && r.code),
+            '嵌字后校对:' + (lines.some((l) => l.includes('问题 0 条')) ? '通过(0 问题)' : '见日志'),
+            repLine || '报告:out/embed_report.md',
+            '',
+            '— 日志末段 —',
+            lines.slice(-10).join('\n'),
+          ].join('\n');
+          setConfirmDlg({
+            title: ok ? '嵌字完成 ✔ 请确认结果' : '嵌字失败',
+            body: form,
+            okText: '确认完成',
+            preview: (ok && page)
+              ? (API + '/preview?folder=' + encodeURIComponent(folder) + '&page=' + encodeURIComponent(page) + '&t=' + Date.now())
+              : '',
+            onOk: () => setConfirmDlg(null),
+          });
+        } catch (e) {
+          setMsg('嵌字失败:' + String(e.message || e));
         } finally {
           setLoading(false);
         }
@@ -1799,6 +2080,24 @@ window.__ModuleLoader__.load({
                 padding: '6px 10px', display: 'inline-block',
               },
             }, '⚠ 首次使用建议先看完「帮助」手册 —— 流程 / 快捷键 / 双端差异 / OCR 兜底都在里面'),
+            h('div', { style: { marginTop: '8px', fontSize: '11px' } },
+              verInfo
+                ? (verInfo.ok
+                  ? (verInfo.latest && verInfo.current && verInfo.latest !== verInfo.current
+                    ? h('span', { style: { color: '#ffb020' } },
+                        '版本 v' + verInfo.current + ' · 有新版本 v' + verInfo.latest + ',建议更新' + (verInfo.url ? ':' + verInfo.url : ''))
+                    : h('span', { style: { color: '#7ac97a' } },
+                        '版本 v' + (verInfo.current || '?') + ' · 已是最新'))
+                  : h('span', { style: S.muted }, '版本检测失败(可手动再试)'))
+                : h('span', { style: S.muted }, '版本检测中…'),
+              h('button', {
+                type: 'button', style: { ...S.btn, marginLeft: '8px', fontSize: '10px', padding: '2px 6px' },
+                onClick: async () => {
+                  setVerInfo(null);
+                  try { setVerInfo(await api('/version-check?force=1')); }
+                  catch (e) { setVerInfo({ ok: false }); }
+                },
+              }, '检查更新')),
           ),
           h('div', { style: S.row },
             h('input', {
@@ -1906,6 +2205,12 @@ window.__ModuleLoader__.load({
           h('span', { style: { flex: 1 } }),
           h('span', { style: { ...S.muted, maxWidth: '55%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, folder),
         ),
+        (!wsExists) ? h('div', { style: { ...S.box, borderColor: 'rgba(255,180,0,0.5)' } },
+          h('div', { style: { fontWeight: 600, marginBottom: '4px' } }, '⚠ 嵌字工作区未就绪'),
+          h('div', { style: { ...S.muted, fontSize: '11px' } },
+            '嵌字报告与对话汇报需要工作区目录。请到「设置 → 嵌字工作区」指定并点「检查/创建」;'
+            + '确认嵌字时会再核实一次,缺失会自动创建。'),
+        ) : null,
         info ? h('div', { style: S.box },
           h('div', { style: S.row },
             h('span', { style: S.chip }, `页数 ${info.pageCount}`),
@@ -1915,15 +2220,37 @@ window.__ModuleLoader__.load({
           h('div', { style: S.row },
             h('button', { type: 'button', style: S.btn, disabled: loading, onClick: () => run('ocr') }, 'OCR'),
             h('button', { type: 'button', style: S.btn, disabled: loading, onClick: () => run('translate') }, '翻译'),
+            h('button', {
+              type: 'button', style: S.btn, disabled: loading,
+              title: '当前页所有框:视觉引擎读原文 → DSH 模型翻译(兜底用)',
+              onClick: () => visionPage(),
+            }, '单页识图翻译'),
             h('button', { type: 'button', style: S.btn, disabled: loading, onClick: () => run('proofread') }, '校对'),
             h('button', { type: 'button', style: S.btn, disabled: loading, onClick: () => run('embed') }, '嵌字'),
+            h('button', {
+              type: 'button',
+              style: loading ? S.btn : S.btnOn,
+              disabled: loading,
+              title: '先自动校对 → 确认 → 嵌字(嵌字后自动校对输出)',
+              onClick: () => confirmEmbed(),
+            }, '确认嵌字'),
           ),
         ) : null,
         msg ? h('div', { style: { ...S.muted, marginBottom: '6px' } }, msg) : null,
         info && pages.length ? h('div', null,
           h('div', { style: S.row },
             h('button', { type: 'button', style: S.btn, onClick: () => idx > 0 && loadPage(pages[idx - 1].page) }, '◀'),
-            h('span', { style: { flex: 1, textAlign: 'center' } }, page || '-'),
+            h('input', {
+              style: { ...S.input, flex: '0 0 64px', minWidth: 0, textAlign: 'center' },
+              placeholder: '页码',
+              title: '输入页码直达(回车也可)',
+              value: jumpNo,
+              onChange: (e) => setJumpNo(e.target.value.replace(/[^0-9]/g, '')),
+              onKeyDown: (e) => { if (e.key === 'Enter') jumpPage(); },
+            }),
+            h('button', { type: 'button', style: S.btn, onClick: () => jumpPage() }, '跳'),
+            h('span', { style: { flex: 1, textAlign: 'center', ...S.muted, fontSize: '11px' } },
+              (idx >= 0 ? (idx + 1) : '-') + ' / ' + pages.length + ' · ' + (page || '-')),
             h('button', { type: 'button', style: S.btn, onClick: () => idx >= 0 && idx < pages.length - 1 && loadPage(pages[idx + 1].page) }, '▶'),
             h('button', { type: 'button', style: S.btn, onClick: () => savePage() }, '保存'),
             autoSavedAt
@@ -2042,6 +2369,47 @@ window.__ModuleLoader__.load({
             + 'N=切类型 · E=切原文处理(直盖→抹除→覆盖) · V/H=竖/横 · A=自动 · Ctrl+Z 撤销 · Ctrl+S 保存 · ←/→ 翻页'),
         ) : null,
         log ? h('div', { style: S.log }, log) : null,
+        confirmDlg ? h('div', {
+          style: {
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 999,
+          },
+        },
+          h('div', {
+            style: {
+              background: '#25262b', color: '#eee', borderRadius: '8px',
+              padding: '14px 16px', width: '90%', maxWidth: '620px',
+              boxShadow: '0 8px 30px rgba(0,0,0,0.5)',
+            },
+          },
+            h('div', { style: { fontWeight: 600, marginBottom: '8px' } }, confirmDlg.title || '确认'),
+            h('pre', {
+              style: {
+                whiteSpace: 'pre-wrap', fontSize: '11px', lineHeight: '1.5',
+                maxHeight: '320px', overflow: 'auto', margin: '0 0 12px',
+                background: 'rgba(0,0,0,0.25)', padding: '8px', borderRadius: '6px',
+              },
+            }, confirmDlg.body || ''),
+            confirmDlg.preview
+              ? h('img', {
+                  src: confirmDlg.preview,
+                  style: { maxWidth: '100%', maxHeight: '360px', display: 'block',
+                           margin: '0 0 12px', border: '1px solid rgba(128,128,128,0.4)',
+                           borderRadius: '6px' },
+                })
+              : null,
+            h('div', { style: { display: 'flex', gap: '8px', justifyContent: 'flex-end' } },
+              h('button', {
+                type: 'button', style: S.btn,
+                onClick: () => setConfirmDlg(null),
+              }, '取消'),
+              h('button', {
+                type: 'button', style: S.btnOn,
+                onClick: () => { try { confirmDlg.onOk && confirmDlg.onOk(); } catch (e) { setConfirmDlg(null); } },
+              }, confirmDlg.okText || '确定'),
+            ),
+          ),
+        ) : null,
       );
     }
 
@@ -2110,6 +2478,36 @@ window.__ModuleLoader__.load({
 
     /* ---------------- 注册 ---------------- */
 
+    // 面板级错误边界:任何渲染异常都不再黑屏,显示错误 + 一键重置记忆
+    class PanelErrorBoundary extends React.Component {
+      constructor(props) { super(props); this.state = { err: '' }; }
+      static getDerivedStateFromError(e) { return { err: String((e && e.message) || e) }; }
+      componentDidCatch(e) { console.error('[manga-workflow] 面板异常:', e); }
+      render() {
+        if (this.state.err) {
+          return h('div', { style: { padding: '16px', fontSize: '12px', color: '#ff9b9b' } },
+            h('div', { style: { fontWeight: 600, marginBottom: '8px' } }, '⚠ 面板出错(已捕获,未黑屏)'),
+            h('pre', { style: { whiteSpace: 'pre-wrap', margin: '0 0 10px' } }, this.state.err),
+            h('button', {
+              type: 'button', style: S.btn,
+              onClick: () => {
+                try {
+                  localStorage.removeItem('manga-desk-view');
+                  localStorage.removeItem('manga-desk-page');
+                  localStorage.removeItem('manga-desk-folder');
+                } catch (e) { /* ignore */ }
+                try { location.reload(); } catch (e) { /* ignore */ }
+              },
+            }, '重置界面记忆并刷新'),
+            h('div', { style: { ...S.muted, fontSize: '10px', marginTop: '8px' } },
+              '若仍出错,把上面的错误文字发给开发者。'),
+          );
+        }
+        return this.props.children;
+      }
+    }
+    function SafePanel() { return h(PanelErrorBoundary, null, h(Workbench)); }
+
     const ICON_STYLE = { display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%', fontSize: '15px', lineHeight: 1 };
     function PanelIcon() { return h('span', { style: ICON_STYLE, 'aria-hidden': true }, '🎨'); }
 
@@ -2117,7 +2515,7 @@ window.__ModuleLoader__.load({
       inject: ['slots'],
       apply(ctx) {
         ctx.slots.inject('main', () =>
-          ctx.slots.register({ name: 'main', key: PANEL_ID }, Workbench),
+          ctx.slots.register({ name: 'main', key: PANEL_ID }, SafePanel),
         );
         // 侧边栏入口 / 启动提示弹窗:必须**同步注册**(异步注册 dock slot 实测不生效),
         // 初值取 localStorage 缓存(避免关闭状态下闪现),随后再用服务端配置校正。

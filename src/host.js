@@ -6,6 +6,7 @@ import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, statSy
 import { spawn, execFileSync } from 'node:child_process'
 import path from 'node:path'
 import os from 'node:os'
+import { fileURLToPath } from 'node:url'
 import { createServer } from 'node:http'
 import { randomBytes } from 'node:crypto'
 import { deflateSync } from 'node:zlib'
@@ -350,7 +351,8 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
   // ---------- OCR 兜底配置(manga_tool/_ocr_cfg.json) ----------
   // mode: off | empty(只补空框) | short(空+极短) | all(全部重读)
   const ocrCfgFile = () => path.join(scriptsDir, '_ocr_cfg.json')
-  const OCR_DEFAULTS = { mode: 'empty', minChars: 1, maxPerBook: 30 }
+  const OCR_DEFAULTS = { mode: 'empty', minChars: 1, maxPerBook: 30,
+    shortAuto: true, shortMax: 5 }
   const OCR_MODES = ['off', 'empty', 'short', 'all']
   function readOcrCfg() {
     const d = loadJson(ocrCfgFile())
@@ -359,6 +361,8 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
       if (OCR_MODES.includes(d.mode)) out.mode = d.mode
       if (Number.isFinite(Number(d.minChars))) out.minChars = Math.max(0, Math.min(20, Number(d.minChars)))
       if (Number.isFinite(Number(d.maxPerBook))) out.maxPerBook = Math.max(1, Math.min(500, Number(d.maxPerBook)))
+      if (typeof d.shortAuto === 'boolean') out.shortAuto = d.shortAuto
+      if (Number.isFinite(Number(d.shortMax))) out.shortMax = Math.max(1, Math.min(20, Number(d.shortMax)))
     }
     return out
   }
@@ -367,6 +371,8 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
     const next = { ...cur }
     if (patch && OCR_MODES.includes(patch.mode)) next.mode = patch.mode
     if (patch && Number.isFinite(Number(patch.minChars))) next.minChars = Math.max(0, Math.min(20, Number(patch.minChars)))
+    if (patch && typeof patch.shortAuto === 'boolean') next.shortAuto = patch.shortAuto
+    if (patch && Number.isFinite(Number(patch.shortMax))) next.shortMax = Math.max(1, Math.min(20, Number(patch.shortMax)))
     if (patch && Number.isFinite(Number(patch.maxPerBook))) next.maxPerBook = Math.max(1, Math.min(500, Number(patch.maxPerBook)))
     const file = ocrCfgFile()
     mkdirSync(path.dirname(file), { recursive: true })
@@ -379,13 +385,15 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
   // rememberPathWeb : 网页端是否记住上次文件夹(仅网页端改)
   // rememberPathDesktop: 桌面端是否记住上次文件夹(仅桌面端改)
   const uiSettingsFile = () => path.join(os.homedir(), '.manga-workflow', 'settings.json')
-  const UI_DEFAULTS = { sidebarEnabled: true, bannerEnabled: true, rememberPathWeb: true, rememberPathDesktop: true }
+  const UI_DEFAULTS = { sidebarEnabled: true, bannerEnabled: true,
+    rememberPathWeb: true, rememberPathDesktop: true, workspaceDir: '' }
   function readUiSettings() {
     const d = loadJson(uiSettingsFile())
     const out = { ...UI_DEFAULTS }
     if (d && typeof d === 'object') {
       for (const k of Object.keys(UI_DEFAULTS)) {
-        if (typeof d[k] === 'boolean') out[k] = d[k]
+        if (typeof UI_DEFAULTS[k] === 'boolean' && typeof d[k] === 'boolean') out[k] = d[k]
+        if (typeof UI_DEFAULTS[k] === 'string' && typeof d[k] === 'string') out[k] = d[k]
       }
     }
     return out
@@ -397,8 +405,13 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
     const base = (raw && typeof raw === 'object') ? { ...raw } : {}
     const next = { ...UI_DEFAULTS }
     for (const k of Object.keys(UI_DEFAULTS)) {
-      if (typeof base[k] === 'boolean') next[k] = base[k]
-      if (patch && typeof patch[k] === 'boolean') next[k] = patch[k]
+      if (typeof UI_DEFAULTS[k] === 'boolean') {
+        if (typeof base[k] === 'boolean') next[k] = base[k]
+        if (patch && typeof patch[k] === 'boolean') next[k] = patch[k]
+      } else if (typeof UI_DEFAULTS[k] === 'string') {
+        if (typeof base[k] === 'string') next[k] = base[k]
+        if (patch && typeof patch[k] === 'string') next[k] = patch[k]
+      }
     }
     const merged = { ...base, ...next }
     mkdirSync(path.dirname(file), { recursive: true })
@@ -733,6 +746,20 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
         return send(200, { ok: true, llm: llmReady() })
       }
       if (req.headers['x-manga-token'] !== token) return send(403, { error: 'bad token' })
+      if (req.method === 'POST' && req.url && req.url.startsWith('/open-embed')) {
+        let raw = ''
+        req.on('data', (d) => { raw += d })
+        req.on('end', () => {
+          let body = {}
+          try { body = JSON.parse(raw || '{}') } catch {}
+          try {
+            const f = path.join(os.homedir(), '.manga-workflow', 'pending_embed.json')
+            writeFileSync(f, JSON.stringify({ folder: body.folder || '', at: new Date().toISOString() }, null, 1))
+            return send(200, { ok: true })
+          } catch (e) { return send(500, { ok: false, error: String(e) }) }
+        })
+        return
+      }
       if (req.method === 'POST' && req.url && req.url.startsWith('/translate-dsh')) {
         let raw = ''
         req.on('data', (d) => { raw += d })
@@ -826,6 +853,39 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
     let err = r.err
     let code = r.code
 
+    // 嵌字完成后写一份报告(便于在对话里汇报/回看)
+    if (step === 'embed') {
+      try {
+        const repDir = path.join(folder, 'out')
+        mkdirSync(repDir, { recursive: true })
+        const rep = path.join(repDir, 'embed_report.md')
+        const tail = String(out || '').slice(-4000)
+        writeFileSync(rep, [
+          '# 嵌字报告', '',
+          '- 时间:' + new Date().toLocaleString('zh-CN'),
+          '- 文件夹:' + folder,
+          '- 退出码:' + code,
+          '', '## 日志(末段)', '', '```', tail, '```', '',
+        ].join('\n'), 'utf8')
+        out += '\n[报告] ' + rep + '\n'
+        // 写入工作区 + 待汇报队列(供对话汇报)
+        try {
+          const ws = String(readUiSettings().workspaceDir || '').trim()
+          if (ws) {
+            mkdirSync(path.join(ws, 'manga_reports'), { recursive: true })
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+            const book = path.basename(folder)
+            const dst = path.join(ws, 'manga_reports', book + '_' + stamp + '.md')
+            writeFileSync(dst, out.slice(-8000), 'utf8')
+            writeFileSync(path.join(ws, 'pending_report.json'), JSON.stringify({
+              folder, report: dst, at: new Date().toISOString(),
+            }, null, 1), 'utf8')
+            out += '[工作区] ' + dst + '\n'
+          }
+        } catch (e) { /* 忽略 */ }
+      } catch (e) { /* 报告失败不影响嵌字 */ }
+    }
+
     // OCR 之后按配置接「视觉引擎兜底」
     if (step === 'ocr' && code === 0) {
       const oc = readOcrCfg()
@@ -833,7 +893,9 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
         const fb = path.join(scriptsDir, 'ocr_fallback.py')
         if (existsSync(fb)) {
           const fbArgs = [fb, folder, '--mode', oc.mode,
-            '--min-chars', String(oc.minChars), '--max', String(oc.maxPerBook)]
+            '--min-chars', String(oc.minChars), '--max', String(oc.maxPerBook),
+            '--short-auto', oc.shortAuto === false ? '0' : '1',
+            '--short-max', String(oc.shortMax || 5)]
           if (config.lang) fbArgs.push('--lang', config.lang)
           const hdr = `\n--- OCR 兜底(mode=${oc.mode}, 上限 ${oc.maxPerBook} 框) ---\n`
           if (onData) onData(hdr)
@@ -1223,6 +1285,130 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
       return { ok: false, message: String((e && e.message) || e) }
     }
   }
+
+    // 桌面端「确认嵌字」请求:GET → {folder} 并消费
+    if (name === 'embed-request') {
+      const f = path.join(os.homedir(), '.manga-workflow', 'pending_embed.json')
+      if (!existsSync(f)) return json(res, 200, { pending: false })
+      let d = {}
+      try { d = JSON.parse(readFileSync(f, 'utf8')) } catch { d = {} }
+      try { unlinkSync(f) } catch {}
+      return json(res, 200, { pending: !!d.folder, folder: d.folder || '' })
+    }
+
+    // 嵌字预览:GET preview?folder=&page= → 输出图(out/out_lama/preview),没有则回退原图
+    if (name === 'preview') {
+      const folder = url.searchParams.get('folder') || ''
+      const page = url.searchParams.get('page') || ''
+      if (!folder || !page || !existsSync(folder)) return json(res, 400, { error: '参数错误' })
+      const exts = ['.png', '.webp', '.jpg', '.jpeg']
+      const dirs = ['out', 'out_lama', 'preview', '']
+      let found = null
+      for (const d of dirs) {
+        for (const ext of exts) {
+          const f = path.join(folder, d, page + ext)
+          if (existsSync(f)) { found = f; break }
+        }
+        if (found) break
+      }
+      if (!found) return json(res, 404, { error: '预览不存在(先嵌字)' })
+      const ext = path.extname(found).toLowerCase()
+      const mime = ext === '.png' ? 'image/png' : 'image/jpeg'
+      try {
+        const buf = readFileSync(found)
+        res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-store' })
+        return res.end(buf)
+      } catch (e) {
+        return json(res, 500, { error: String((e && e.message) || e) })
+      }
+    }
+
+    // 版本检测:GET ?force=1 → {current, latest, url, checkedAt, cached}
+    if (name === 'version-check') {
+      const cacheFile = path.join(os.homedir(), '.manga-workflow', 'version.json')
+      const today = new Date().toISOString().slice(0, 10)
+      const force = url.searchParams.get('force') === '1'
+      let cur = ''
+      try {
+        const pkg = JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'))
+        cur = String(pkg.version || '')
+      } catch (e) { cur = '' }
+      let cache = {}
+      try { cache = JSON.parse(readFileSync(cacheFile, 'utf8')) } catch (e) { cache = {} }
+      if (!force && cache && cache.date === today && cache.latest) {
+        return json(res, 200, { ok: true, current: cur, latest: cache.latest,
+          url: cache.url || '', checkedAt: cache.checkedAt || '', cached: true })
+      }
+      try {
+        const r = await fetch('https://api.github.com/repos/YiDaWuYi/dsh-manga-workflow/releases/latest', {
+          headers: { 'User-Agent': 'dsh-manga-version-check', Accept: 'application/vnd.github+json' },
+        })
+        if (!r.ok) throw new Error('HTTP ' + r.status)
+        const j = await r.json()
+        const latest = String(j.tag_name || '').replace(/^v/i, '')
+        const out = { date: today, latest, url: j.html_url || '', checkedAt: new Date().toISOString() }
+        try { mkdirSync(path.dirname(cacheFile), { recursive: true }); writeFileSync(cacheFile, JSON.stringify(out, null, 1)) } catch (e) {}
+        return json(res, 200, { ok: true, current: cur, latest, url: out.url, checkedAt: out.checkedAt, cached: false })
+      } catch (e) {
+        return json(res, 200, { ok: false, current: cur, error: String((e && e.message) || e),
+          latest: cache.latest || '', cached: !!cache.latest })
+      }
+    }
+
+    // 嵌字工作区状态:GET → {dir, exists}
+    if (name === 'workspace/status') {
+      const dir = String(readUiSettings().workspaceDir || '').trim()
+      return json(res, 200, { dir, exists: !!dir && existsSync(dir) })
+    }
+    // 确保工作区存在:POST {dir?} → {ok, dir, existed}
+    if (name === 'workspace/ensure' && req.method === 'POST') {
+      const raw = await readBody(req)
+      let body = {}
+      try { body = JSON.parse(raw || '{}') } catch {}
+      const dir = String((body.dir || readUiSettings().workspaceDir || '')).trim()
+      if (!dir) return json(res, 400, { ok: false, error: '未设置工作区目录' })
+      try {
+        const existed = existsSync(dir)
+        mkdirSync(dir, { recursive: true })
+        return json(res, 200, { ok: true, dir, existed })
+      } catch (e) {
+        return json(res, 500, { ok: false, error: String((e && e.message) || e) })
+      }
+    }
+
+    // 单页识图翻译兜底:视觉引擎读本页所有框 + DSH 模型翻译
+    if (name === 'vision-page' && req.method === 'POST') {
+      const raw = await readBody(req)
+      let body = {}
+      try { body = JSON.parse(raw || '{}') } catch {}
+      const dir = body.folder || folder
+      const page = body.page
+      if (!dir || !page) return json(res, 400, { error: '缺少 folder/page' })
+      if (!llmReady()) return json(res, 400, { error: 'DSH 模型不可用(需在 DSH 内运行插件)' })
+      const id = 'v' + Date.now().toString(36)
+      const job = { id, step: 'vision-page', folder: dir, status: 'running', code: null,
+                    log: '', started: Date.now() }
+      jobs.set(id, job)
+      ;(async () => {
+        const env = { ...runtimeEnv, MANGA_ENV_DIR: envDirCfg() }
+        const fb = scriptPath('ocr_fallback.py')
+        const args = [fb, dir, '--mode', 'all', '--force', '--page', page, '--short-auto', '0']
+        if (config.lang) args.push('--lang', config.lang)
+        job.log += '[识图] 用视觉引擎读本页所有框…\n'
+        const r = await runProcess(pythonPath, args, env, (t) => { job.log += t })
+        job.log += '\n[识图] exit=' + r.code + '\n'
+        job.log += '[DSH 翻译] 提交 DSH 模型翻译…\n'
+        const n = await dshTranslateFolder(dir, page, (t) => { job.log += t }, true)
+        job.log += '\n[DSH 翻译] 完成 ' + n + ' 条\n'
+        job.code = 0
+        job.status = 'done'
+      })().catch((e) => {
+        job.status = 'error'
+        job.code = 1
+        job.log += '\n[失败] ' + String((e && e.message) || e)
+      })
+      return json(res, 200, { ok: true, jobId: id })
+    }
 
     // DSH 模型翻译(免 Key):POST {folder, page?} → jobId,用 /job 轮询
     if (name === 'translate-dsh' && req.method === 'POST') {

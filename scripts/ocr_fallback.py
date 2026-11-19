@@ -20,7 +20,8 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CFG_FILE = os.path.join(HERE, '_ocr_cfg.json')
-DEFAULT_CFG = {'mode': 'empty', 'minChars': 1, 'maxPerBook': 30}
+DEFAULT_CFG = {'mode': 'empty', 'minChars': 1, 'maxPerBook': 30,
+               'shortAuto': True, 'shortMax': 5}
 
 PROMPT = {
     'ja': '这是一格漫画里的文字。请只输出图中的日文原文,不要翻译、不要解释、不要加引号。',
@@ -95,6 +96,31 @@ def _is_blank(png_bytes, std_thr=2.0, ink_thr=0.003):
     if float(arr.std()) >= std_thr:
         return False
     return float((arr < 128).mean()) < ink_thr
+
+
+DONE_FILE = 'ocr_fallback_done.json'
+
+
+def box_key(page, idx, box, text=None):
+    """已兜底标记的键:页 + 序号 + 框坐标。
+
+    不含原文摘要:兜底会改写原文,若把原文算进键里,第二次就直接对不上了;
+    框坐标/序号变化(重新标框)才算"新框",会重新兜底。
+    """
+    return '%s|%s|%s,%s,%s,%s' % (
+        page, idx, int(box.get('x', 0) or 0), int(box.get('y', 0) or 0),
+        int(box.get('w', 0) or 0), int(box.get('h', 0) or 0))
+
+
+def load_done(folder):
+    return load_json(os.path.join(folder, DONE_FILE), {}) or {}
+
+
+def save_done(folder, done):
+    try:
+        save_json(os.path.join(folder, DONE_FILE), done)
+    except Exception:
+        pass
 
 
 def looks_bad(text, min_chars):
@@ -190,6 +216,8 @@ def main():
     lang = 'ja'
     page_only = None
     cfg_override = None
+    short_auto = None
+    force = '--force' in args
 
     def arg(name, cast=str, default=None):
         if name in args:
@@ -200,10 +228,19 @@ def main():
 
     mode = arg('--mode', str, mode)
     min_chars = arg('--min-chars', int, min_chars)
+    if short_auto is None:
+        short_auto = bool(cfg.get('shortAuto', True))
+    short_max = int(cfg.get('shortMax', 5) or 5)
     max_boxes = arg('--max', int, max_boxes)
     lang = arg('--lang', str, lang)
     cfg_override = arg('--config', str, None)
     page_only = arg('--page', str, None)
+    _sa = arg('--short-auto', str, None)
+    if _sa is not None:
+        short_auto = str(_sa).strip().lower() not in ('0', 'false', 'no', 'off')
+    _sm = arg('--short-max', int, None)
+    if _sm is not None:
+        cfg['shortMax'] = _sm
 
     if '--dry-run' in args:
         dry = True
@@ -217,6 +254,11 @@ def main():
     pages = sorted(regions.keys())
     if page_only:
         pages = [p for p in pages if p == page_only]
+
+    # 已兜底标记(避免重复花钱)
+    done = load_done(folder) if isinstance(load_done(folder), dict) else {}
+    done_keys = done.get('keys') if isinstance(done.get('keys'), dict) else {}
+    skipped_done = 0
 
     # 候选框
     cands = []
@@ -233,16 +275,26 @@ def main():
                 bad, why = looks_bad(t, min_chars)
                 if bad and mode == 'empty' and why != '空':
                     bad = False
+                # 短句自动兜底:有效字数 ≤ shortMax(默认 5)也送去重读
+                if (not bad) and short_auto and core_len(t) <= short_max:
+                    bad, why = True, '短文本(≤%d 字,自动)' % short_max
             if bad:
-                cands.append({'page': p, 'idx': i, 'reason': why, 'old': t, 'box': b})
+                key = box_key(p, i, b, t)
+                if (not force) and key in done_keys:
+                    skipped_done += 1
+                    continue
+                cands.append({'page': p, 'idx': i, 'reason': why, 'old': t,
+                              'box': b, 'key': key})
     truncated = len(cands) > max_boxes
     cands = cands[:max_boxes]
 
-    print('模式=%s 最小字数=%d 上限=%d 页数=%d 候选框=%d%s' % (
-        mode, min_chars, max_boxes, len(pages), len(cands), '(已截断)' if truncated else ''))
+    print('模式=%s 最小字数=%d 上限=%d 页数=%d 候选框=%d 已兜底跳过=%d 短句自动=%s%s' % (
+        mode, min_chars, max_boxes, len(pages), len(cands), skipped_done,
+        '开' if short_auto else '关', '(已截断)' if truncated else ''))
 
     if not cands:
         print(json.dumps({'ok': True, 'mode': mode, 'candidates': 0, 'fixed': 0, 'failed': 0,
+                          'skipped_done': skipped_done, 'short_auto': bool(short_auto),
                           'tokens_in': 0, 'tokens_out': 0}, ensure_ascii=False))
         return 0
 
@@ -286,6 +338,7 @@ def main():
             continue
         if _is_blank(png):
             unchanged += 1
+            done_keys[c['key']] = {'t': int(time.time()), 'why': 'blank'}
             print('进度 %d/%d %s#%d 空白,跳过(不调用视觉引擎)' % (n, len(cands), c['page'], c['idx']))
             continue
         text, usage, err = call_vision(vcfg, png, lang)
@@ -298,6 +351,7 @@ def main():
         new = text.replace('\n', ' ').strip()
         if not new:
             unchanged += 1
+            done_keys[c['key']] = {'t': int(time.time()), 'why': 'empty-out'}
             print('进度 %d/%d %s#%d 模型无输出,保留原值' % (n, len(cands), c['page'], c['idx']))
             continue
         rows = ocr.setdefault(c['page'], [])
@@ -305,13 +359,18 @@ def main():
             rows.append('')
         if new == rows[c['idx']]:
             unchanged += 1
+            done_keys[c['key']] = {'t': int(time.time()), 'why': 'same'}
             print('进度 %d/%d %s#%d 结果相同' % (n, len(cands), c['page'], c['idx']))
         else:
             rows[c['idx']] = new
             changed_pages.add(c['page'])
             fixed += 1
+            done_keys[c['key']] = {'t': int(time.time()), 'why': 'fixed'}
             print('进度 %d/%d %s#%d %r → %r' % (n, len(cands), c['page'], c['idx'],
                                               (c['old'] or '')[:14], new[:24]))
+
+    if done_keys:
+        save_done(folder, {'version': 1, 'keys': done_keys})
 
     if fixed:
         # 先备份原始 OCR,便于回滚
@@ -328,6 +387,7 @@ def main():
 
     print(json.dumps({'ok': True, 'mode': mode, 'candidates': len(cands), 'fixed': fixed,
                       'unchanged': unchanged, 'failed': failed, 'truncated': truncated,
+                      'skipped_done': skipped_done, 'short_auto': bool(short_auto),
                       'tokens_in': tin, 'tokens_out': tout,
                       'seconds': round(time.time() - t0, 1)}, ensure_ascii=False))
     return 0

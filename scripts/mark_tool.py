@@ -159,6 +159,25 @@ class MarkTool:
                 out[k] = mem.get(k, [])
         return out
 
+    def _write_sync_base(self):
+        """框数/文本对齐时记录配对基线,供「同步」按坐标找回配对。"""
+        try:
+            reg = self._load(self.regions_file)
+            ocr = self._load(self.ocr_file)
+            tr = self._load(self.trans_file)
+            nb = {}
+            for pg, arr in reg.items():
+                o = ocr.get(pg) or []
+                t2 = tr.get(pg) or []
+                if len(o) != len(arr) or len(t2) != len(arr):
+                    continue
+                nb[pg] = [{'x': b.get('x'), 'y': b.get('y'), 'w': b.get('w'), 'h': b.get('h'),
+                           'ocr': o[k], 'trans': t2[k]} for k, b in enumerate(arr)]
+            with open(os.path.join(self.src_dir, '_sync_base.json'), 'w', encoding='utf-8') as f:
+                json.dump(nb, f, ensure_ascii=False, indent=1)
+        except Exception:
+            pass
+
     def _save(self):
         # 提交当前页(用 cur_key,无扩展名)
         if self.cur_key:
@@ -168,6 +187,7 @@ class MarkTool:
                                   getattr(self, '_base_regions', self.regions))
         with open(self.regions_file, 'w', encoding='utf-8') as f:
             json.dump(merged, f, ensure_ascii=False, indent=1)
+        self._write_sync_base()
         self.regions = merged
         # 顺便记录设置(GPU去字开关)
         try:
@@ -194,8 +214,14 @@ class MarkTool:
         # 第一行:导航 + 操作
         top = tk.Frame(self.root)
         top.pack(side=tk.TOP, fill=tk.X, padx=4, pady=(4, 1))
-        tk.Button(top, text="◀ 上一页(←)", command=self.prev_page).pack(side=tk.LEFT)
-        tk.Button(top, text="下一页 ▶(→)", command=self.next_page).pack(side=tk.LEFT, padx=4)
+        tk.Button(top, text="◀", width=3, command=self.prev_page).pack(side=tk.LEFT)
+        self.jump_var = tk.StringVar()
+        jump = tk.Entry(top, textvariable=self.jump_var, width=5, justify='center')
+        jump.pack(side=tk.LEFT, padx=2)
+        jump.bind('<Return>', lambda e: self.jump_page())
+        tk.Button(top, text="跳", width=3, command=self.jump_page).pack(side=tk.LEFT, padx=(0, 2))
+        tk.Button(top, text="▶", width=3, command=self.next_page).pack(side=tk.LEFT)
+        tk.Label(top, text="页").pack(side=tk.LEFT, padx=(2, 6))
         tk.Button(top, text="撤销", command=self.undo).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="清空本页", command=self.clear_page).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="保存", command=self.save_btn).pack(side=tk.LEFT, padx=4)
@@ -205,9 +231,10 @@ class MarkTool:
                      values=['全部(自动区分)', '只标气泡', '只标拟声词']).pack(side=tk.LEFT, padx=(2, 0))
         tk.Button(top, text="刷新", command=self.refresh).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="一键识别(整本:标框+OCR)", command=self.one_click).pack(side=tk.LEFT, padx=4)
-        tk.Button(top, text="全自动(OCR→翻译→校对→嵌字)",
+        tk.Button(top, text="全自动(OCR→翻译→校对)",
                   command=self.auto_all).pack(side=tk.LEFT, padx=(4, 0))
-        tk.Button(top, text="重标同步", command=self.resync).pack(side=tk.LEFT, padx=(4, 0))
+        tk.Button(top, text="同步", command=self.sync_pairs,
+                  ).pack(side=tk.LEFT, padx=(4, 0))
         tk.Button(top, text="翻译", command=self.translate_text).pack(side=tk.LEFT, padx=(4, 0))
         tk.Button(top, text="校对(嵌字前)", command=self.proofread_pre).pack(side=tk.LEFT, padx=(4, 0))
         ttk.Combobox(top, textvariable=self.proof_mode, values=["原文+译文", "只校原文"],
@@ -224,6 +251,8 @@ class MarkTool:
         tk.Label(top, text="范围:").pack(side=tk.LEFT, padx=(8, 0))
         tk.Radiobutton(top, text="当前页", variable=self.scope, value="page").pack(side=tk.LEFT)
         tk.Radiobutton(top, text="整本", variable=self.scope, value="book").pack(side=tk.LEFT)
+        tk.Button(top, text="确认嵌字", command=self.confirm_embed_via_web
+                  ).pack(side=tk.LEFT, padx=(10, 0))
         
         # 底部常驻状态栏:页码/文件名/框数 + 当前任务进度(始终可见)
         bottom = tk.Frame(self.root)
@@ -515,6 +544,13 @@ class MarkTool:
             if x0 <= e.x <= x1 and y0 <= e.y <= y1:
                 self._push_undo()
                 self.page_boxes.pop(i)
+                # 同步删掉对应原文/译文,避免之后整体错位
+                key = self._page_key()
+                for d in (self.box_text, self.trans):
+                    row = d.get(key)
+                    if isinstance(row, list) and i < len(row):
+                        row.pop(i)
+                self._save_texts()
                 break
         self._redraw()
 
@@ -858,6 +894,50 @@ class MarkTool:
                            % (pages, cnt['body'], cnt['plain'], cnt['title']))
 
     # ---------- 按钮 ----------
+    def confirm_embed_via_web(self):
+        """把「确认嵌字」交给网页端:通知 DSH → 关闭桌面端。"""
+        info = _dsh_bridge_info()
+        if not info:
+            messagebox.showwarning('无法交给网页端',
+                                   'DSH 未在运行(找不到本机桥)。\n请先启动 DSH,'
+                                   '或直接在网页端工作台点「确认嵌字」。')
+            return
+        if not messagebox.askyesno(
+                '确认嵌字(网页端)',
+                '将把当前书交给 DSH 网页端:\n%s\n\n网页端会先自动校对,再让你确认嵌字。\n'
+                '确认后**关闭本桌面窗口**。继续吗?' % self.src_dir):
+            return
+        try:
+            self._save()
+            import urllib.request
+            url = 'http://127.0.0.1:%d/open-embed' % info['port']
+            body = json.dumps({'folder': self.src_dir}).encode('utf-8')
+            req = urllib.request.Request(url, data=body, method='POST', headers={
+                'Content-Type': 'application/json', 'x-manga-token': info['token']})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                j = json.loads(r.read().decode('utf-8', 'replace'))
+            if not j.get('ok'):
+                raise RuntimeError(j.get('error') or '未知错误')
+        except Exception as e:
+            messagebox.showerror('交给网页端失败', str(e))
+            return
+        self.root.after(300, self.root.destroy)
+
+    def jump_page(self):
+        """输入页码直达(1 起,超出范围自动夹取)。"""
+        raw = (self.jump_var.get() if hasattr(self, 'jump_var') else '').strip()
+        if not raw.isdigit():
+            self.status.config(text='请输入页码(1~%d)' % len(self.pages))
+            return
+        n = int(raw)
+        n = max(1, min(len(self.pages), n))
+        self.idx = n - 1
+        self._load_page()
+        try:
+            self.jump_var.set('')
+        except Exception:
+            pass
+
     def prev_page(self):
         if self.idx > 0:
             self._goto(self.idx - 1)
@@ -1157,157 +1237,129 @@ class MarkTool:
             '请切到 DSH 会话,对 AI 说:\n「处理翻译请求」或「翻译这个文件夹」')
 
     # ---------- 重标后同步 ----------
-    def resync(self):
-        """重新标注后同步:对齐数组 → 整本 OCR → 翻译(覆盖旧译) → 校对。"""
+    def sync_pairs(self, quiet=False):
+        """同步:只把已标注框的「原文 ↔ 译文」按当前框顺序对齐配对。
+
+        quiet=True 时不弹窗(供兜底后自动调用),返回 (页数, 框数, 对齐处数, 被裁条数)。
+        
+
+        不重新 OCR、不重新翻译、不改动没标框的页;框数变化时按索引裁剪/补空,
+        让 ocr_text.json / trans.json 与 regions.json 的框一一对应(不串行)。
+        """
         if any(getattr(self, a, False) for a in
-               ('_ocr_running', '_detect_running', '_trans_running', '_sync_running')):
+               ('_ocr_running', '_detect_running', '_trans_running')):
             messagebox.showinfo('提示', '正在处理中,请稍候...')
             return
-        if not messagebox.askyesno(
-                '重标同步',
-                '将整本重跑:\n1. 对齐 OCR/译文与框(框数变了会清空该页旧数据)\n'
-                '2. 自动识别(OCR)\n3. 翻译(会覆盖旧译文)\n4. 校对\n\n继续吗?'):
-            return
-        import threading, queue, subprocess
-        here, vpy, env = self._job_env()
-        env['PYTHONIOENCODING'] = 'utf-8'
-        self._save()
-        # 引擎优先级
-        engines = self.trans_cfg.get('engines') or ['ai']
-        ai_cfg = (self.trans_cfg.get('ai') or {})
-        ai_ready = bool(ai_cfg.get('baseUrl') and ai_cfg.get('apiKey') and ai_cfg.get('model'))
-        if not ai_ready:
-            try:
-                _v = _load_settings()
-                ai_ready = bool(_v.get('apiBase') and _v.get('apiKey') and _v.get('model'))
-            except Exception:
-                ai_ready = False
-        free = [e for e in engines if e in ('google', 'mymemory')]
-        run_engines = (['ai'] if (ai_ready and 'ai' in engines) else []) + free
-        proxy = (self.trans_cfg.get('proxy') or '').strip()
-        use_bridge = ('dsh' in engines) and (not run_engines) and bool(_dsh_bridge_info())
-        overwrite = self.trans_cfg.get('overwrite', True)
-        self._sync_running = True
-        self._sync_queue = queue.Queue()
-        self.status.config(text='重标同步 1/4:对齐框与数据…')
-        self.root.configure(cursor='watch')
-        q = self._sync_queue
-
-        def run(cmd, label, timeout=7200):
-            r = subprocess.run(cmd, env=env, capture_output=True, text=True,
-                               encoding='utf-8', errors='replace', timeout=timeout)
-            if r.returncode not in (0, 1):
-                raise RuntimeError(label + ' 失败:' + ((r.stderr or '')[-500:] or
-                                                       ('退出码 %d' % r.returncode)))
-            return r.stdout or ''
-
-        def worker():
-            err = None
-            note = ''
-            try:
-                # ===== 1) 对齐:框数变化时裁剪/补齐 OCR 与译文 =====
-                reg = self._load(self.regions_file)
-                ocr = self._load(self.ocr_file)
-                tr = self._load(self.trans_file)
-                fixed = 0
-                for pg, arr in reg.items():
-                    n = len(arr or [])
-                    for d in (ocr, tr):
-                        row = d.get(pg)
-                        if not isinstance(row, list):
-                            d[pg] = [''] * n
-                            fixed += 1
-                        elif len(row) > n:
-                            d[pg] = row[:n]
-                            fixed += 1
-                        elif len(row) < n:
-                            d[pg] = row + [''] * (n - len(row))
-                            fixed += 1
-                if fixed:
-                    try:
-                        json.dump(ocr, open(self.ocr_file, 'w', encoding='utf-8'),
-                                  ensure_ascii=False, indent=1)
-                        json.dump(tr, open(self.trans_file, 'w', encoding='utf-8'),
-                                  ensure_ascii=False, indent=1)
-                    except Exception:
-                        pass
-                    note += '已对齐 %d 处数组长度。\n' % fixed
-                # ===== 2) 整本 OCR =====
-                q.put(('status', '重标同步 2/4:整本 OCR…'))
-                run([vpy, os.path.join(here, 'ocr_regions.py'), self.src_dir,
-                     '--lang', self.lang.get()], 'OCR')
-                # ===== 3) 翻译(覆盖旧译) =====
-                trans_n = 0
-                if use_bridge:
-                    ocr2 = self._load(self.ocr_file)
-                    pages = sorted(p for p in reg if any(str(x).strip() for x in (ocr2.get(p) or [])))
-                    for i, pg in enumerate(pages, 1):
-                        q.put(('status', '重标同步 3/4:DSH 翻译(%d/%d)…' % (i, len(pages))))
-                        trans_n += _dsh_translate_via_bridge(self.src_dir, pg, overwrite=overwrite)
-                    note += 'DSH 模型翻译 %d 页。\n' % len(pages)
-                elif run_engines:
-                    q.put(('status', '重标同步 3/4:翻译(%s)…' % ','.join(run_engines)))
-                    cmd = [vpy, os.path.join(here, 'translate.py'), self.src_dir,
-                           '--engines', ','.join(run_engines), '--from', self.lang.get()]
-                    if overwrite:
-                        cmd += ['--overwrite']
-                    if proxy:
-                        cmd += ['--proxy', proxy]
-                    out = run(cmd, '翻译')
-                    try:
-                        last = [l for l in out.splitlines() if l.strip().startswith('{')][-1]
-                        trans_n = int(json.loads(last).get('translated') or 0)
-                    except Exception:
-                        pass
-                    note += '翻译 %d 条。\n' % trans_n
-                else:
-                    self._export_ai_request()
-                    note += '未配置可自动执行的翻译引擎,已导出翻译请求。\n'
-                # ===== 4) 校对 =====
-                q.put(('status', '重标同步 4/4:校对…'))
-                pout = run([vpy, os.path.join(here, 'proofread.py'), self.src_dir,
-                            '--stage', 'pre', '--mode', 'both'], '校对')
-                lines = [l for l in pout.splitlines() if l.strip()]
-                issues = [l for l in lines if l.startswith('[问题]')]
-                warns = [l for l in lines if l.startswith('[提示]')]
-                note += '校对:问题 %d 条 / 提示 %d 条\n' % (len(issues), len(warns))
-                for l in (issues + warns)[:8]:
-                    note += '  ' + l + '\n'
-            except Exception as e:
-                err = str(e)
-            q.put(('done', (err, note)))
-
-        threading.Thread(target=worker, daemon=True).start()
-        self.root.after(300, self._poll_resync)
-
-    def _poll_resync(self):
-        import queue
+        # 旧配对基线(上次同步/识别时的「框坐标 + 原文 + 译文」)
+        base_file = os.path.join(self.src_dir, '_sync_base.json')
+        base = self._load(base_file) if os.path.exists(base_file) else {}
         try:
-            kind, payload = self._sync_queue.get_nowait()
-        except queue.Empty:
-            if getattr(self, '_sync_running', False):
-                self.root.after(300, self._poll_resync)
-            return
-        if kind == 'status':
-            self.status.config(text=payload)
-            self.root.after(200, self._poll_resync)
-            return
-        err, note = payload
-        self._sync_running = False
-        self.root.configure(cursor='')
-        if err:
-            self.status.config(text='重标同步失败')
-            messagebox.showerror('重标同步失败', err)
+            self._save()
+        except Exception:
+            pass
+        reg = self._load(self.regions_file)
+        ocr = self._load(self.ocr_file)
+        tr = self._load(self.trans_file)
+        pages = 0
+        fixed = 0
+        trimmed = 0
+        kept = 0
+        for pg, arr in reg.items():
+            n = len(arr or [])
+            if not n:
+                continue          # 没标框的页不动
+            pages += 1
+            # 有基线时:按框坐标把旧原文/译文搬回对应框
+            old = base.get(pg) if isinstance(base.get(pg), list) else []
+            if old and n:
+                def best(ob):
+                    bx, by = ob.get('x', 0), ob.get('y', 0)
+                    bw, bh = ob.get('w', 1) or 1, ob.get('h', 1) or 1
+                    cx, cy = bx + bw / 2.0, by + bh / 2.0
+                    pick, bestd = None, 1e9
+                    for oi, b2 in enumerate(arr):
+                        ox, oy = b2.get('x', 0), b2.get('y', 0)
+                        ow, oh = b2.get('w', 1) or 1, b2.get('h', 1) or 1
+                        ox2, oy2 = ox + ow / 2.0, oy + oh / 2.0
+                        d = ((ox2 - cx) ** 2 + (oy2 - cy) ** 2) ** 0.5
+                        if d < bestd:
+                            bestd, pick = d, oi
+                    lim = max(24.0, 0.45 * min(bw, bh))
+                    return pick if bestd <= lim else None
+                ocr_row = ocr.get(pg) if isinstance(ocr.get(pg), list) else []
+                tr_row = tr.get(pg) if isinstance(tr.get(pg), list) else []
+                new_ocr, new_tr = [''] * n, [''] * n
+                moved = 0
+                for k, b in enumerate(arr):
+                    oi = best(b)
+                    if oi is None:
+                        continue
+                    if oi < len(ocr_row) and oi < len(old):
+                        new_ocr[k] = old[oi].get('ocr') or (ocr_row[oi] if oi < len(ocr_row) else '')
+                        new_tr[k] = old[oi].get('trans') or (tr_row[oi] if oi < len(tr_row) else '')
+                        moved += 1
+                if moved:
+                    ocr[pg] = new_ocr
+                    tr[pg] = new_tr
+                    fixed += 1
+                    continue
+            for d in (ocr, tr):
+                row = d.get(pg)
+                if not isinstance(row, list):
+                    d[pg] = [''] * n
+                    fixed += 1
+                    continue
+                if len(row) > n:
+                    trimmed += len([x for x in row[n:] if str(x).strip()])
+                    d[pg] = row[:n]
+                    fixed += 1
+                elif len(row) < n:
+                    d[pg] = row + [''] * (n - len(row))
+                    fixed += 1
+            kept += n
+        if not fixed:
+            self.status.config(text='同步完成:配对已一致(共 %d 页 / %d 框),无需修改' % (pages, kept))
+            if not quiet:
+                messagebox.showinfo('同步完成',
+                                    '共 %d 页有标框(%d 个框),原文与译文的配对已经一致,无需修改。'
+                                    % (pages, kept))
+            return (pages, kept, 0, 0)
+        try:
+            with open(self.ocr_file, 'w', encoding='utf-8') as f:
+                json.dump(ocr, f, ensure_ascii=False, indent=1)
+            with open(self.trans_file, 'w', encoding='utf-8') as f:
+                json.dump(tr, f, ensure_ascii=False, indent=1)
+        except Exception as e:
+            messagebox.showerror('同步失败', '写入失败:%s' % e)
             return
         self.box_text = self._load(self.ocr_file)
         self._snapshot()
         self.trans = self._load(self.trans_file)
+        # 更新配对基线(下次同步按新坐标匹配)
+        try:
+            nb = {}
+            for pg, arr2 in reg.items():
+                o2 = self.box_text.get(pg) or []
+                t2 = self.trans.get(pg) or []
+                nb[pg] = [{'x': b.get('x'), 'y': b.get('y'), 'w': b.get('w'), 'h': b.get('h'),
+                           'ocr': o2[k] if k < len(o2) else '',
+                           'trans': t2[k] if k < len(t2) else ''}
+                          for k, b in enumerate(arr2 or [])]
+            with open(os.path.join(self.src_dir, '_sync_base.json'), 'w', encoding='utf-8') as f:
+                json.dump(nb, f, ensure_ascii=False, indent=1)
+        except Exception:
+            pass
         self.refresh()
-        self.status.config(text='重标同步完成')
-        messagebox.showinfo('重标同步完成',
-                            '对齐 → OCR → 翻译(覆盖) → 校对 已完成。\n\n'
-                            + (note + '\n' if note else '')
-                            + '下一步:确认校对报告后跑「嵌字」。')
+        msg = ('已同步 %d 页(共 %d 个框)的原文 ↔ 译文配对。\n\n'
+               '· 对齐处数:%d\n' % (pages, kept, fixed))
+        if trimmed:
+            msg += ('· 注意:%d 条超出了当前框数(对应框已被删除),已从文件中裁掉,\n'
+                    '  如需保留请先备份 ocr_text.json / trans.json。\n' % trimmed)
+        msg += '\n未重新 OCR,未重新翻译。'
+        self.status.config(text='同步完成:%d 页 / %d 框,对齐 %d 处' % (pages, kept, fixed))
+        if not quiet:
+            messagebox.showinfo('同步完成', msg)
+        return (pages, kept, fixed, trimmed)
 
     # ---------- 全自动:OCR → 翻译 → 校对 → 嵌字 ----------
     def auto_all(self):
@@ -1351,7 +1403,6 @@ class MarkTool:
             ('翻译', trans_cmd),
             ('校对', [vpy, os.path.join(here, 'proofread.py'), self.src_dir, '--stage', 'pre',
                       '--mode', 'orig' if self.proof_mode.get() == '只校原文' else 'both']),
-            ('嵌字', [vpy, os.path.join(here, 'embed_regions.py'), self.src_dir]),
         ]
         self._auto_steps = steps
         self._auto_env = env
@@ -1465,7 +1516,9 @@ class MarkTool:
             if os.path.exists(fb):
                 cmd = [vpy, fb, self.src_dir, '--mode', str(cfg['mode']),
                        '--min-chars', str(int(cfg['minChars'])),
-                       '--max', str(int(cfg['maxPerBook']))]
+                       '--max', str(int(cfg['maxPerBook'])),
+                       '--short-auto', '1' if cfg.get('shortAuto', True) else '0',
+                       '--short-max', str(int(cfg.get('shortMax', 5)))]
                 if self.lang.get():
                     cmd += ['--lang', self.lang.get()]
                 self._run_job('OCR兜底', cmd, env,
@@ -1496,12 +1549,24 @@ class MarkTool:
         cand = summary.get('candidates', 0)
         fixed = summary.get('fixed', 0)
         failed = summary.get('failed', 0)
+        skipped = summary.get('skipped_done', 0)
+        # 兜底改了原文 → 用「同步」重新对齐译文配对(不弹窗)
+        sync_note = ''
+        try:
+            if fixed:
+                r = self.sync_pairs(quiet=True)
+                if r:
+                    sync_note = '\n已自动同步原文↔译文配对(%d 页)。' % r[0]
+        except Exception:
+            pass
         if cand == 0:
-            self.status.config(text='OCR 兜底:没有需要重读的框')
+            self.status.config(text='OCR 兜底:没有需要重读的框(已兜底跳过 %d)' % skipped)
             return
         msg = ('视觉引擎兜底完成:\n候选 %d 框,修正 %d 框,失败 %d 框\n'
                'tokens: 输入 %s / 输出 %s' % (
-                   cand, fixed, failed, summary.get('tokens_in', '?'), summary.get('tokens_out', '?')))
+                   cand, fixed, failed, summary.get('tokens_in', '?'), summary.get('tokens_out', '?'))
+               + (('\n已兜底跳过(不重复花钱):%d 框' % skipped) if skipped else '')
+               + sync_note)
         if summary.get('truncated'):
             msg += '\n(已达每本上限,剩余框未处理,可在设置里调高)'
         self.status.config(text='OCR 兜底:修正 %d / 候选 %d' % (fixed, cand))
@@ -1518,7 +1583,7 @@ class MarkTool:
         return bool(self._job_state().get('running'))
 
     def _any_task_running(self):
-        """统一判断:新任务器在跑,或旧的多步任务(一键识别/重标同步)在跑。"""
+        """统一判断:新任务器在跑,或旧的多步任务在跑。"""
         if self._job_running():
             return True
         return any(getattr(self, a, False) for a in
@@ -2241,6 +2306,45 @@ def _save_trans_cfg(d):
 _UI_DEFAULTS = {'sidebarEnabled': True, 'bannerEnabled': True, 'rememberPathWeb': True, 'rememberPathDesktop': True}
 
 
+def _version_cache_file():
+    return os.path.join(os.path.expanduser('~'), '.manga-workflow', 'version.json')
+
+
+def _version_check(force=False):
+    """查 GitHub 最新版本;每天首次自动查一次(force=True 强制)。失败返回 ok=False。"""
+    import urllib.request
+    today = __import__('datetime').date.today().isoformat()
+    cur = APP_VERSION.lstrip('Vv')
+    cache = {}
+    try:
+        with open(_version_cache_file(), encoding='utf-8') as f:
+            cache = json.load(f)
+    except Exception:
+        cache = {}
+    if (not force) and cache.get('date') == today and cache.get('latest'):
+        return {'ok': True, 'current': cur, 'latest': cache['latest'], 'url': cache.get('url', ''),
+                'cached': True}
+    req = urllib.request.Request(
+        'https://api.github.com/repos/YiDaWuYi/dsh-manga-workflow/releases/latest',
+        headers={'User-Agent': 'dsh-manga-version-check', 'Accept': 'application/vnd.github+json'})
+    try:
+        with urllib.request.urlopen(req, timeout=8) as r:
+            j = json.loads(r.read().decode('utf-8', 'replace'))
+        latest = str(j.get('tag_name') or '').lstrip('Vv')
+        out = {'date': today, 'latest': latest, 'url': j.get('html_url', ''), 'checkedAt': today}
+        try:
+            d = os.path.dirname(_version_cache_file())
+            if d and not os.path.isdir(d):
+                os.makedirs(d, exist_ok=True)
+            with open(_version_cache_file(), 'w', encoding='utf-8') as f:
+                json.dump(out, f, ensure_ascii=False, indent=1)
+        except Exception:
+            pass
+        return {'ok': True, 'current': cur, 'latest': latest, 'url': out['url'], 'cached': False}
+    except Exception as e:
+        return {'ok': False, 'current': cur, 'error': str(e), 'latest': cache.get('latest', '')}
+
+
 def _tool_ui_file():
     return os.path.join(os.path.expanduser('~'), '.manga-workflow', 'tool_ui.json')
 
@@ -2623,7 +2727,7 @@ def _style_preview_photo(style_id, w=54, h=30, font=''):
 
 
 # ---------------- 版本 ----------------
-APP_VERSION = 'V1.10.1'
+APP_VERSION = 'V1.11'
 
 # ---------------- 帮助窗口(程序内渲染,不依赖 .md 文件关联)----------------
 
@@ -2762,7 +2866,8 @@ def _show_help_window(parent):
 
 # ---------------- OCR 兜底(视觉引擎)----------------
 # mode: off | empty(只补空框) | short(空+极短) | all(全部重读)
-_OCR_DEFAULTS = {'mode': 'empty', 'minChars': 1, 'maxPerBook': 30}
+_OCR_DEFAULTS = {'mode': 'empty', 'minChars': 1, 'maxPerBook': 30,
+                 'shortAuto': True, 'shortMax': 5}
 _OCR_MODES = ('off', 'empty', 'short', 'all')
 _OCR_MODE_LABELS = [
     ('off', '关闭'),
@@ -2784,13 +2889,16 @@ def _load_ocr_cfg():
         if isinstance(loaded, dict):
             if loaded.get('mode') in _OCR_MODES:
                 d['mode'] = loaded['mode']
-            for k in ('minChars', 'maxPerBook'):
+            for k in ('minChars', 'maxPerBook', 'shortMax'):
                 if isinstance(loaded.get(k), (int, float)):
                     d[k] = int(loaded[k])
+            if isinstance(loaded.get('shortAuto'), bool):
+                d['shortAuto'] = loaded['shortAuto']
     except Exception:
         pass
     d['minChars'] = max(0, min(20, d['minChars']))
     d['maxPerBook'] = max(1, min(500, d['maxPerBook']))
+    d['shortMax'] = max(1, min(20, d.get('shortMax', 5)))
     return d
 
 
@@ -2798,13 +2906,16 @@ def _save_ocr_cfg(patch):
     cur = _load_ocr_cfg()
     if patch.get('mode') in _OCR_MODES:
         cur['mode'] = patch['mode']
-    for k in ('minChars', 'maxPerBook'):
+    for k in ('minChars', 'maxPerBook', 'shortMax'):
         try:
             cur[k] = int(patch.get(k, cur[k]))
         except Exception:
             pass
+    if 'shortAuto' in patch:
+        cur['shortAuto'] = bool(patch['shortAuto'])
     cur['minChars'] = max(0, min(20, cur['minChars']))
     cur['maxPerBook'] = max(1, min(500, cur['maxPerBook']))
+    cur['shortMax'] = max(1, min(20, cur.get('shortMax', 5)))
     try:
         with open(_ocr_cfg_file(), 'w', encoding='utf-8') as f:
             json.dump(cur, f, ensure_ascii=False, indent=1)
@@ -2959,6 +3070,8 @@ def _show_settings(parent, book_dir=None):
     tk.Label(uf, text='界面选项', width=10, anchor='w').pack(side=tk.LEFT)
     tk.Checkbutton(uf, text='记住上次路径(本端)', variable=v_remember).pack(side=tk.LEFT)
     tk.Checkbutton(uf, text='显示 DSH 侧边栏(双端共享)', variable=v_sidebar).pack(side=tk.LEFT, padx=(12, 0))
+    tk.Label(uf, text='关闭后侧边栏隐藏;之后启动嵌字流程需在 DSH 对话里手动请求(或重新打开侧边栏)',
+             fg='#cc7a00', font=('Microsoft YaHei', 8)).pack(side=tk.LEFT, padx=(6, 0))
     uf2 = tk.Frame(frm)
     uf2.pack(fill=tk.X, pady=(2, 0))
     tk.Label(uf2, text='', width=10).pack(side=tk.LEFT)
@@ -3007,6 +3120,8 @@ def _show_settings(parent, book_dir=None):
                 'mode': v_ocmode.get(),
                 'minChars': e_minchars.get().strip(),
                 'maxPerBook': e_maxboxes.get().strip(),
+                'shortAuto': bool(v_shortauto.get()),
+                'shortMax': e_shortmax.get().strip(),
             })
         except Exception as e:
             out.config(text='界面选项保存失败:' + str(e), fg='#cc0000')
@@ -3061,6 +3176,17 @@ def _show_settings(parent, book_dir=None):
     e_maxboxes.insert(0, str(_oc['maxPerBook']))
     tk.Label(of2, text='框(控制花费;每框约 ¥0.01~0.09)', fg='#777',
              font=('Microsoft YaHei', 8)).pack(side=tk.LEFT, padx=(4, 0))
+    of3 = tk.Frame(frm)
+    of3.pack(fill=tk.X, pady=(2, 0))
+    tk.Label(of3, text='', width=10).pack(side=tk.LEFT)
+    v_shortauto = tk.BooleanVar(value=bool(_oc.get('shortAuto', True)))
+    tk.Checkbutton(of3, text='≤%d 字的短句也自动兜底(推荐)' % int(_oc.get('shortMax', 5)),
+                   variable=v_shortauto, font=('Microsoft YaHei', 8)).pack(side=tk.LEFT)
+    e_shortmax = tk.Entry(of3, width=4)
+    e_shortmax.pack(side=tk.LEFT, padx=(6, 0))
+    e_shortmax.insert(0, str(_oc.get('shortMax', 5)))
+    tk.Label(of3, text='字以内', fg='#777',
+             font=('Microsoft YaHei', 8)).pack(side=tk.LEFT)
 
     # 成本预估
     cf = tk.Frame(frm)
@@ -3207,6 +3333,47 @@ def show_home():
         tk.Label(sf, text="✅ 引擎齐全(OCR / GPU去字 / 韩文)",
                  fg="#2a7a2a", font=("Microsoft YaHei", 9)).pack(side=tk.LEFT)
     tk.Button(sf, text="引擎帮助", command=lambda: _show_engine_help(root, eng)).pack(side=tk.LEFT, padx=(10, 0))
+    # 嵌字工作区提示(嵌字报告/对话汇报用;在网页端设置里配置,双端共享)
+    _ui = _load_ui_cfg()
+    _ws = str(_ui.get('workspaceDir') or '').strip()
+    if not _ws or not os.path.isdir(_ws):
+        tk.Label(root, text='⚠ 嵌字工作区未就绪:网页端「设置 → 嵌字工作区」指定目录;确认嵌字时会自动创建',
+                 fg='#cc7a00', font=('Microsoft YaHei', 9)).pack(pady=(2, 0))
+    # 版本检测:每天首次启动自动查一次 + 手动按钮
+    vf2 = tk.Frame(root)
+    vf2.pack(pady=(4, 0))
+    _vlab = tk.Label(vf2, text='版本 ' + APP_VERSION, fg='#666',
+                     font=('Microsoft YaHei', 8))
+    _vlab.pack(side=tk.LEFT)
+
+    def _ver_done(res):
+        try:
+            if res.get('ok'):
+                latest = str(res.get('latest') or '')
+                if latest and latest != str(res.get('current') or ''):
+                    _vlab.config(text='版本 %s · 有新版本 v%s,建议更新' % (APP_VERSION, latest), fg='#cc7a00')
+                else:
+                    _vlab.config(text='版本 %s · 已是最新' % APP_VERSION, fg='#2a7a2a')
+            else:
+                _vlab.config(text='版本 %s · 检测失败(可手动再试)' % APP_VERSION, fg='#888')
+        except Exception:
+            pass
+
+    def _ver_check(force=False):
+        import threading
+
+        def w():
+            r2 = _version_check(force=force)
+            try:
+                root.after(0, lambda: _ver_done(r2))
+            except Exception:
+                pass
+        threading.Thread(target=w, daemon=True).start()
+
+    tk.Button(vf2, text='检查更新', command=lambda: _ver_check(True),
+              font=('Microsoft YaHei', 8)).pack(side=tk.LEFT, padx=(8, 0))
+    root.after(500, lambda: _ver_check(False))
+
     # 视觉引擎(识图)状态 + 配置入口:让 AI 看图必须先配好
     vf = tk.Frame(root)
     vf.pack(pady=(8, 0))

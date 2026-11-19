@@ -10,7 +10,8 @@
  * import of DSH-internal packages (a linked local bundle cannot resolve them).
  */
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync } from 'node:fs'
+import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { createMangaDesk, resolveRuntime } from './src/host.js'
@@ -240,6 +241,30 @@ export function apply(ctx, config = {}) {
       if (args.all) cliArgs.push('--all')
       const r = await runProcess(pythonPath, cliArgs, runtimeEnv)
       return { text: [`exit=${r.code}`, tail(r.out, 4000), tail(r.err, 1500)].filter(Boolean).join('\n') }
+    },
+  })
+
+  ctx.tools.register({
+    name: 'manga_report',
+    description: 'Read the pending manga embed report queued by the web panel (workspace pending_report.json) and return it; marks it consumed.',
+    parameters: {},
+    output: TEXT_OUTPUT,
+    async execute() {
+      const uiFile = path.join(os.homedir(), '.manga-workflow', 'settings.json')
+      let ws = ''
+      try { ws = String(JSON.parse(readFileSync(uiFile, 'utf8')).workspaceDir || '') } catch (e) { ws = '' }
+      if (!ws) return { text: '未设置嵌字工作区(网页端 设置 → 嵌字工作区)。' }
+      const pending = path.join(ws, 'pending_report.json')
+      if (!existsSync(pending)) return { text: '没有待汇报的嵌字报告。' }
+      let info = {}
+      try { info = JSON.parse(readFileSync(pending, 'utf8')) } catch (e) { info = {} }
+      let body = ''
+      try { body = readFileSync(String(info.report || ''), 'utf8') } catch (e) { body = '' }
+      try { renameSync(pending, pending + '.done') } catch (e) { /* ignore */ }
+      const txt = (info.folder ? '书:' + info.folder + '\n' : '')
+        + (info.at ? '时间:' + info.at + '\n' : '')
+        + (body ? '\n' + body.slice(-6000) : '(报告文件缺失)')
+      return { text: txt }
     },
   })
 }
