@@ -633,6 +633,17 @@ export function createMangaDesk({ pythonPath, scriptsDir, toolScriptsDir, runtim
       }
     }
 
+    // 文字样式预设(styles.json,与桌面端/嵌字渲染共用)
+    if (name === 'styles') {
+      try {
+        const f = path.join(scriptsDir, 'styles.json')
+        const d = JSON.parse(readFileSync(f, 'utf8'))
+        return json(res, 200, { presets: d.presets || [], note: d._note || '' })
+      } catch (e) {
+        return json(res, 500, { error: '读取样式失败: ' + String((e && e.message) || e) })
+      }
+    }
+
     // OCR 兜底阈值
     if (name === 'settings/ocr') {
       if (req.method === 'POST') {

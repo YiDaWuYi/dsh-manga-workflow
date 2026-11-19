@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-manga-workflow',
   factory(require) {
   // 版本号(发布时同步 package.json / 桌面端 mark_tool.py)
-  const APP_VERSION = 'V1.5';
+  const APP_VERSION = 'V1.6';
 
     const React = require('react');
     const h = React.createElement;
@@ -115,7 +115,61 @@ window.__ModuleLoader__.load({
 
     /* ---------------- 网页标框 ---------------- */
 
-    function Marker({ folder, page, data, mode, setMode, vertical, size, sfx, erase, color, outline, onBoxesChange, onTextEdit }) {
+    // ---------------- 文字样式(可视化预览) ----------------
+    function styleCss(p, px) {
+      const fill = Array.isArray(p.fill) ? 'rgb(' + p.fill.join(',') + ')' : '#000';
+      const sf = Array.isArray(p.strokeFill) ? 'rgb(' + p.strokeFill.join(',') + ')' : 'transparent';
+      const w = Math.max(1, Math.round((p.stroke || 0) / 2));
+      const sh = Array.isArray(p.shadow) ? p.shadow : null;
+      const shadows = [];
+      if (sh) shadows.push(`${sh[0]}px ${sh[1]}px 0 rgb(${sh[2]},${sh[3]},${sh[4]})`);
+      if (p.art && (p.stroke || 0) > 0) {
+        // 艺术字:用多层描边阴影模拟「外粗内细」
+        for (const d of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+          shadows.push(`${d[0]}px ${d[1]}px 0 ${sf}`);
+        }
+      }
+      return {
+        color: fill,
+        fontWeight: p.bold ? 800 : 500,
+        WebkitTextStroke: (p.stroke || 0) > 0 ? `${w}px ${sf}` : undefined,
+        paintOrder: 'stroke fill',
+        textShadow: shadows.length ? shadows.join(', ') : undefined,
+        fontSize: (px || 20) + 'px',
+        lineHeight: '1.1',
+        whiteSpace: 'nowrap',
+        userSelect: 'none',
+      };
+    }
+
+    function StyleChips({ presets, value, onChange, glyph }) {
+      if (!presets || !presets.length) return h('span', { style: { ...S.muted, fontSize: '11px' } }, '样式加载中…');
+      return h('div', { style: { display: 'flex', gap: '4px', flexWrap: 'wrap', alignItems: 'center' } },
+        presets.map((p) => {
+          const on = value === p.id;
+          return h('button', {
+            key: p.id,
+            type: 'button',
+            title: `${p.label} · ${p.desc}`,
+            onClick: () => onChange(p.id),
+            style: {
+              ...S.btn,
+              padding: '2px 5px',
+              cursor: 'pointer',
+              display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1px',
+              minWidth: '44px',
+              border: on ? '2px solid #ffd24d' : undefined,
+              background: on ? 'rgba(255,210,77,0.16)' : undefined,
+            },
+          },
+            h('span', { style: styleCss(p, 19) }, glyph),
+            h('span', { style: { fontSize: '9px', opacity: 0.75 } }, p.label),
+          );
+        }),
+      );
+    }
+
+    function Marker({ folder, page, data, mode, setMode, vertical, size, sfx, erase, bodyStyle, sfxStyle, onBoxesChange, onTextEdit }) {
       const [boxes, setBoxes] = React.useState([]);
       const [imgUrl, setImgUrl] = React.useState('');
       const [natural, setNatural] = React.useState({ w: 1280, h: 1800 });
@@ -207,7 +261,9 @@ window.__ModuleLoader__.load({
             setBoxes((prev) => [...prev, {
               x: x0, y: y0, w, h: hh,
               vertical: !!vertical, size: Number(size) || 20,
-              erase: !!erase, sfx: !!sfx, color: color || 'black', outline: !!outline,
+              erase: !!erase, sfx: !!sfx,
+              style: sfx ? sfxStyle : bodyStyle,
+              color: 'black', outline: true,
               points: paint.map((p) => [p.x, p.y]),
             }]);
           }
@@ -225,7 +281,9 @@ window.__ModuleLoader__.load({
         setBoxes((prev) => [...prev, {
           x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(hh),
           vertical: !!vertical, size: Number(size) || 20,
-          erase: !!erase, sfx: !!sfx, color: color || 'black', outline: !!outline,
+          erase: !!erase, sfx: !!sfx,
+          style: sfx ? sfxStyle : bodyStyle,
+          color: 'black', outline: true,
         }]);
       };
 
@@ -516,6 +574,23 @@ window.__ModuleLoader__.load({
         h('div', { style: S.box },
           h('div', { style: boxTitle }, '七、常见问题'),
           h(HelpLines, { lines: FAQ, style: S.muted }),
+        ),
+        h('div', { style: S.box },
+          h('div', { style: boxTitle }, '八、文字样式(正文 / 拟声词)'),
+          h(HelpLines, {
+            lines: [
+              '工作台里有两排样式按钮,按钮上直接画出渲染效果(和最终嵌字一致):',
+              '',
+              '【正文样式】经典(黑字白边)· 极简(纯黑)· 细边 · 加粗 · 反白(白字黑边)· 投影',
+              '【拟声样式】漫画(黑字白边+影)· 反白 · 燃红 · 亮黄 · 热橙 · 冷蓝',
+              '',
+              '· 点一下选中(高亮),之后新画的框使用它;',
+              '· 改已有框:选好样式 → 点「应用到本页」→ 再保存;',
+              '· 拟声样式只作用于勾了「拟声(N)」的框;',
+              '· 样式表在 manga_tool/styles.json,网页端与桌面端共用同一份。',
+            ],
+            style: S.muted,
+          }),
         ),
         h('div', { style: { textAlign: 'center', marginTop: '20px', fontSize: '10px', color: '#888' } },
           '· ' + APP_VERSION + ' · 本软件完全由 AI(DeepSeek Harness Agent)生成与编写。作者:YiDaWuYi',
@@ -991,8 +1066,21 @@ window.__ModuleLoader__.load({
       const [size, setSize] = React.useState('20');
       const [sfx, setSfx] = React.useState(false);
       const [erase, setErase] = React.useState(true);
-      const [color, setColor] = React.useState('black');
-      const [outline, setOutline] = React.useState(true);
+      const [bodyStyle, setBodyStyle] = React.useState('body_classic');
+      const [sfxStyle, setSfxStyle] = React.useState('sfx_classic');
+      const [stylePresets, setStylePresets] = React.useState(null);
+
+      // 文字样式预设
+      React.useEffect(() => {
+        api('/styles').then((d) => {
+          const ps = (d && d.presets) || [];
+          setStylePresets(ps);
+          const body = ps.filter((p) => p.kind === 'body');
+          const sfxList = ps.filter((p) => p.kind === 'sfx');
+          if (body.length && !body.some((p) => p.id === bodyStyle)) setBodyStyle(body[0].id);
+          if (sfxList.length && !sfxList.some((p) => p.id === sfxStyle)) setSfxStyle(sfxList[0].id);
+        }).catch(() => setStylePresets([]));
+      }, []);
 
       // 启动页:引擎检测 + 视觉引擎状态
       React.useEffect(() => {
@@ -1280,12 +1368,35 @@ window.__ModuleLoader__.load({
             h('input', { style: { ...S.input, flex: '0 0 52px', minWidth: 0 }, value: size, onChange: (e) => setSize(e.target.value) }),
             h('button', { type: 'button', style: sfx ? S.btnOn : S.btn, title: 'N', onClick: () => setSfx((v) => !v) }, sfx ? '拟声(N)✓' : '拟声(N)'),
             h('button', { type: 'button', style: erase ? S.btnOn : S.btn, title: 'E', onClick: () => setErase((v) => !v) }, erase ? '抹除(E)✓' : '抹除(E)'),
-            h('button', { type: 'button', style: color === 'white' ? S.btnOn : S.btn, onClick: () => setColor(color === 'white' ? 'black' : 'white') }, color === 'white' ? '白字' : '黑字'),
-            h('button', { type: 'button', style: outline ? S.btnOn : S.btn, onClick: () => setOutline((v) => !v) }, outline ? '外框✓' : '外框'),
+          ),
+          h('div', { style: { ...S.row, alignItems: 'center' } },
+            h('span', { style: { fontSize: '11px', color: '#888', width: '54px' } }, '正文样式'),
+            h(StyleChips, {
+              presets: (stylePresets || []).filter((p) => p.kind === 'body'),
+              value: bodyStyle, onChange: setBodyStyle, glyph: '正',
+            }),
+          ),
+          h('div', { style: { ...S.row, alignItems: 'center' } },
+            h('span', { style: { fontSize: '11px', color: '#888', width: '54px' } }, '拟声样式'),
+            h(StyleChips, {
+              presets: (stylePresets || []).filter((p) => p.kind === 'sfx'),
+              value: sfxStyle, onChange: setSfxStyle, glyph: '音',
+            }),
+            h('button', {
+              type: 'button', style: { ...S.btn, marginLeft: '6px' },
+              title: '把当前样式应用到本页所有框',
+              onClick: () => {
+                setBoxes((prev) => prev.map((b) => ({
+                  ...b,
+                  style: b.sfx ? sfxStyle : bodyStyle,
+                })));
+                setMsg('已把样式应用到本页所有框,点「保存」生效');
+              },
+            }, '应用到本页'),
           ),
           pageData ? h(Marker, {
             folder, page, data: pageData,
-            mode, setMode, vertical, size, sfx, erase, color, outline,
+            mode, setMode, vertical, size, sfx, erase, bodyStyle, sfxStyle,
             onBoxesChange: setBoxes,
             onTextEdit: (i, orig, trans) => { textEdits.current.set(i, { orig, trans }); },
           }) : null,
