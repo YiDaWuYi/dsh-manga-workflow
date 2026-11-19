@@ -37,6 +37,7 @@ class MarkTool:
             sys.exit(1)
         self.idx = 0
         self.regions = self._load(regions_file)
+        self._snapshot()
         self.vertical = tk.BooleanVar(value=True)
         self.mode = tk.StringVar(value="box")  # box / paint
         self.size = tk.StringVar(value="20")   # 字号(新框默认,可选 10/20/30/50/60 或手动输入)
@@ -63,8 +64,10 @@ class MarkTool:
         self._tkimg = None
         self.ocr_file = os.path.join(os.path.dirname(regions_file), 'ocr_text.json')
         self.box_text = self._load(self.ocr_file)   # 每框识别/识读的原文
+        self._snapshot()
         self.trans_file = os.path.join(os.path.dirname(regions_file), 'trans.json')
         self.trans = self._load(self.trans_file)    # 每框译文
+        self._snapshot()
 
         # 打开时优先跳到第一个有标框的页(封面等无框页直接跳过)
         for i, pg in enumerate(self.pages):
@@ -107,12 +110,48 @@ class MarkTool:
         except Exception:
             return default
 
+    def _snapshot(self):
+        """记下当前内存数据的快照,保存时用来判断"哪些页是本端改过的"。"""
+        try:
+            self._base_regions = json.loads(json.dumps(self.regions))
+        except Exception:
+            self._base_regions = {}
+        try:
+            self._base_text = json.loads(json.dumps(getattr(self, 'box_text', {})))
+        except Exception:
+            self._base_text = {}
+        try:
+            self._base_trans = json.loads(json.dumps(getattr(self, 'trans', {})))
+        except Exception:
+            self._base_trans = {}
+
+    def _merge_save(self, path, mem, base):
+        """按页合并:本端改过的页用内存版,其它页以磁盘为准。
+
+        双端同时编辑同一本时,不会因为本端保存把另一端的删除/新增覆盖掉。
+        """
+        disk = {}
+        if os.path.exists(path):
+            try:
+                disk = json.load(open(path, encoding='utf-8'))
+            except Exception:
+                disk = {}
+        out = dict(disk)
+        for k in set(list(mem.keys()) + list(base.keys())):
+            if mem.get(k) != base.get(k):
+                out[k] = mem.get(k, [])
+        return out
+
     def _save(self):
         # 提交当前页(用 cur_key,无扩展名)
         if self.cur_key:
             self.regions[self.cur_key] = list(self.page_boxes)
-        json.dump(self.regions, open(self.regions_file, 'w', encoding='utf-8'),
+        # 按页合并:只覆盖本端改过的页,其它页保留磁盘上的(可能是网页端刚改的)
+        merged = self._merge_save(self.regions_file, self.regions,
+                                  getattr(self, '_base_regions', self.regions))
+        json.dump(merged, open(self.regions_file, 'w', encoding='utf-8'),
                   ensure_ascii=False, indent=1)
+        self.regions = merged
         # 顺便记录设置(GPU去字开关)
         try:
             cfg_path = os.path.join(os.path.dirname(self.regions_file), 'config.json')
@@ -559,6 +598,7 @@ class MarkTool:
             messagebox.showerror('翻译失败', err)
             return
         self.trans = self._load(self.trans_file)
+        self._snapshot()
         self.refresh()
         info = lines[-1] if lines else ''
         messagebox.showinfo('翻译完成', info or '翻译完成')
@@ -664,6 +704,7 @@ class MarkTool:
             messagebox.showerror('重标同步失败', err)
             return
         self.box_text = self._load(self.ocr_file)
+        self._snapshot()
         self.trans = self._load(self.trans_file)
         self.refresh()
         self.status.config(text='重标同步完成')
@@ -725,6 +766,7 @@ class MarkTool:
             messagebox.showerror('OCR 失败', err)
             return
         self.box_text = self._load(self.ocr_file)
+        self._snapshot()
         self.refresh()
         # 按配置接「视觉引擎兜底」(空/极短框重读)
         cfg = _load_ocr_cfg()
@@ -746,6 +788,7 @@ class MarkTool:
     def _fallback_done(self, err, code, lines):
         """兜底结束:重新加载原文并汇报结果。"""
         self.box_text = self._load(self.ocr_file)
+        self._snapshot()
         self.refresh()
         if err:
             self.status.config(text='OCR 兜底失败(本地 OCR 结果已保留)')
@@ -979,6 +1022,7 @@ class MarkTool:
         except Exception:
             summary = {}
         self.regions = self._load(self.regions_file)
+        self._snapshot()
         self._load_page()
         self.status.config(text='整本自动标框完成:新增 %s 个框,排除 %s 个' % (
             summary.get('boxes', 0), summary.get('dropped', 0)))
@@ -1097,8 +1141,10 @@ class MarkTool:
             messagebox.showerror('一键识别失败', err)
             return
         self.regions = self._load(self.regions_file)
+        self._snapshot()
         self.box_text = self._load(self.ocr_file)
         self.trans = self._load(self.trans_file)
+        self._snapshot()
         self._load_page()
         messagebox.showinfo('一键识别完成', f"{info}。\n橙色为原文,青色为译文,双击可修改。\n(一键识别始终处理整本;只做当前页请用「自动识别(OCR)」)")
 
@@ -1118,15 +1164,22 @@ class MarkTool:
 
     def _save_texts(self):
         try:
-            json.dump(self.box_text, open(self.ocr_file, 'w', encoding='utf-8'),
+            merged = self._merge_save(self.ocr_file, self.box_text,
+                                      getattr(self, '_base_text', self.box_text))
+            json.dump(merged, open(self.ocr_file, 'w', encoding='utf-8'),
                       ensure_ascii=False, indent=1)
+            self.box_text = merged
         except Exception:
             pass
         try:
-            json.dump(self.trans, open(self.trans_file, 'w', encoding='utf-8'),
+            merged = self._merge_save(self.trans_file, self.trans,
+                                      getattr(self, '_base_trans', self.trans))
+            json.dump(merged, open(self.trans_file, 'w', encoding='utf-8'),
                       ensure_ascii=False, indent=1)
+            self.trans = merged
         except Exception:
             pass
+        self._snapshot()
 
     def _edit_texts(self, i):
         key = self._page_key()
@@ -1582,7 +1635,7 @@ def _style_preview_photo(style_id, w=54, h=30):
 
 
 # ---------------- 版本 ----------------
-APP_VERSION = 'V1.8.1'
+APP_VERSION = 'V1.8.2'
 
 # ---------------- 帮助窗口(程序内渲染,不依赖 .md 文件关联)----------------
 

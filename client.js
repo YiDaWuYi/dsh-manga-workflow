@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-manga-workflow',
   factory(require) {
   // 版本号(发布时同步 package.json / 桌面端 mark_tool.py)
-  const APP_VERSION = 'V1.8.2';
+  const APP_VERSION = 'V1.8.3';
 
     const React = require('react');
     const h = React.createElement;
@@ -287,17 +287,25 @@ window.__ModuleLoader__.load({
         }]);
       };
 
-      const hit = (p) => {
+      // 命中测试:带容差(小框/点边角也能选中),避免"明明点在框上却没反应"
+      const hit = (p, pad) => {
+        const d = pad || 0;
         for (let i = boxes.length - 1; i >= 0; i--) {
           const b = boxes[i];
-          if (p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h) return i;
+          if (p.x >= b.x - d && p.x <= b.x + b.w + d && p.y >= b.y - d && p.y <= b.y + b.h + d) return i;
         }
         return -1;
       };
 
+      const hitPad = () => {
+        const el = wrapRef.current;
+        const scale = el && natural.w ? el.getBoundingClientRect().width / natural.w : 1;
+        return Math.max(6, 12 / (scale || 1));   // ≈12 CSS 像素容差
+      };
+
       const onRight = (e) => {
         e.preventDefault();
-        const i = hit(pos(e));
+        const i = hit(pos(e), hitPad());
         if (i >= 0) {
           pushUndo(boxes);
           setBoxes((prev) => prev.filter((_, k) => k !== i));
@@ -305,7 +313,7 @@ window.__ModuleLoader__.load({
       };
 
       const onDouble = (e) => {
-        const i = hit(pos(e));
+        const i = hit(pos(e), hitPad());
         if (i < 0) return;
         setEdit({ idx: i, orig: (data.texts || [])[i] || '', trans: (data.trans || [])[i] || '' });
       };
@@ -1236,6 +1244,12 @@ window.__ModuleLoader__.load({
       const [boxes, setBoxes] = React.useState([]);
       const [msg, setMsg] = React.useState('');
       const textEdits = React.useRef(new Map());
+      // 自动保存
+      const dirtyRef = React.useRef(false);        // 有未保存修改
+      const savingRef = React.useRef(false);       // 正在保存
+      const [editTick, setEditTick] = React.useState(0);
+      const [autoSavedAt, setAutoSavedAt] = React.useState('');
+      const markDirty = () => { dirtyRef.current = true; setEditTick((t) => t + 1); };
 
       // 与桌面版一致的操作状态
       const [mode, setMode] = React.useState('box');
@@ -1329,6 +1343,7 @@ window.__ModuleLoader__.load({
       }
 
       async function loadPage(p) {
+        if (dirtyRef.current) { try { await savePage({ auto: true }); } catch (e) { /* ignore */ } }
         setPage(p);
         try {
           const d = await api(`/regions?folder=${encodeURIComponent(folder)}&page=${encodeURIComponent(p)}`);
@@ -1360,18 +1375,52 @@ window.__ModuleLoader__.load({
         }
       }
 
-      async function savePage() {
+      async function savePage(opts) {
         if (!folder || !page) return;
+        if (savingRef.current) return;
+        savingRef.current = true;
         try {
           const edits = [...textEdits.current.entries()].map(([i, v]) => ({ i, orig: v.orig, trans: v.trans }));
           await api('/save', { folder, page, boxes, edits });
           textEdits.current.clear();
-          setMsg(edits.length ? `已保存(含 ${edits.length} 处文本修改)` : '已保存');
-          await refresh();
+          dirtyRef.current = false;
+          if (opts && opts.auto) {
+            const t = new Date();
+            setAutoSavedAt(t.toTimeString().slice(0, 8));
+          } else {
+            setMsg(edits.length ? `已保存(含 ${edits.length} 处文本修改)` : '已保存');
+            await refresh();
+          }
         } catch (e) {
-          setMsg(String(e.message || e));
+          dirtyRef.current = true;
+          setMsg('保存失败:' + String(e.message || e));
+        } finally {
+          savingRef.current = false;
+          if (dirtyRef.current) setTimeout(() => { if (dirtyRef.current) savePage({ auto: true }); }, 400);
         }
       }
+
+      // 防抖自动保存(约 0.9 秒无操作后写入)
+      React.useEffect(() => {
+        if (!folder || !page || !dirtyRef.current) return;
+        const t = setTimeout(() => { if (dirtyRef.current) savePage({ auto: true }); }, 900);
+        return () => clearTimeout(t);
+      }, [editTick, page, folder, boxes]);
+
+      // 关闭/刷新页面前尽力保存一次
+      React.useEffect(() => {
+        const onUnload = () => {
+          if (!dirtyRef.current || !folder || !page) return;
+          try {
+            const edits = [...textEdits.current.entries()].map(([i, v]) => ({ i, orig: v.orig, trans: v.trans }));
+            const blob = new Blob([JSON.stringify({ folder, page, boxes, edits })],
+              { type: 'application/json' });
+            navigator.sendBeacon(API + '/save', blob);
+          } catch (e) { /* 尽力而为 */ }
+        };
+        window.addEventListener('beforeunload', onUnload);
+        return () => window.removeEventListener('beforeunload', onUnload);
+      }, [folder, page, boxes]);
 
       // 快捷键(与桌面版一致)
       React.useEffect(() => {
@@ -1508,7 +1557,13 @@ window.__ModuleLoader__.load({
       /* ---------- 工作台 ---------- */
       return h('div', { style: S.root },
         h('div', { style: S.row },
-          h('button', { type: 'button', style: S.btn, onClick: () => setView('home') }, '← 主页'),
+          h('button', {
+            type: 'button', style: S.btn,
+            onClick: async () => {
+              if (dirtyRef.current) { try { await savePage({ auto: true }); } catch (e) { /* ignore */ } }
+              setView('home');
+            },
+          }, '← 主页'),
           h('button', { type: 'button', style: S.btn, onClick: () => setView('settings') }, '设置'),
           h('button', { type: 'button', style: S.btn, onClick: () => setView('help') }, '帮助'),
           h('span', { style: { fontWeight: 600, fontSize: '13px' } }, '漫画工作台'),
@@ -1534,7 +1589,11 @@ window.__ModuleLoader__.load({
             h('button', { type: 'button', style: S.btn, onClick: () => idx > 0 && loadPage(pages[idx - 1].page) }, '◀'),
             h('span', { style: { flex: 1, textAlign: 'center' } }, page || '-'),
             h('button', { type: 'button', style: S.btn, onClick: () => idx >= 0 && idx < pages.length - 1 && loadPage(pages[idx + 1].page) }, '▶'),
-            h('button', { type: 'button', style: S.btn, onClick: savePage }, '保存'),
+            h('button', { type: 'button', style: S.btn, onClick: () => savePage() }, '保存'),
+            autoSavedAt
+              ? h('span', { style: { ...S.muted, fontSize: '10px', marginLeft: '6px' } },
+                  '已自动保存 ' + autoSavedAt)
+              : null,
           ),
           h('div', { style: S.row },
             h('button', { type: 'button', style: mode === 'box' ? S.btnOn : S.btn, title: 'B', onClick: () => setMode('box') }, '框选(B)'),
@@ -1574,8 +1633,15 @@ window.__ModuleLoader__.load({
           pageData ? h(Marker, {
             folder, page, data: pageData,
             mode, setMode, vertical, size, sfx, erase, bodyStyle, sfxStyle,
-            onBoxesChange: setBoxes,
-            onTextEdit: (i, orig, trans) => { textEdits.current.set(i, { orig, trans }); },
+            onBoxesChange: (bs) => {
+              setBoxes(bs);
+              const same = pageData && JSON.stringify(bs) === JSON.stringify(pageData.boxes || []);
+              if (!same) markDirty();
+            },
+            onTextEdit: (i, orig, trans) => {
+              textEdits.current.set(i, { orig, trans });
+              markDirty();
+            },
           }) : null,
           h('div', { style: { ...S.muted, marginTop: '4px' } },
             '快捷键:B 框选 · P 涂抹 · V 竖 · H 横 · N 拟声 · E 抹除 · Ctrl+Z 撤销 · Ctrl+S 保存 · ←/→ 翻页 · 右键删框 · 双击改字'),
