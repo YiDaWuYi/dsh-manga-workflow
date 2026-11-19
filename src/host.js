@@ -173,6 +173,59 @@ const DEP_MODULES = [
 
 const _PY_CACHE = new Map()
 
+// ---------------- 安装位置(必须非 C 盘) ----------------
+function setupCfgFile(home) {
+  return path.join(home || os.homedir(), '.manga-workflow', 'setup.json')
+}
+
+function readSetupCfg(home) {
+  const f = setupCfgFile(home)
+  const d = (() => { try { return JSON.parse(readFileSync(f, 'utf8')) } catch { return {} } })()
+  return { envDir: typeof d.envDir === 'string' ? d.envDir : '' }
+}
+
+function writeSetupCfg(home, patch) {
+  const cur = readSetupCfg(home)
+  const next = { ...cur, ...(patch || {}) }
+  const f = setupCfgFile(home)
+  try {
+    mkdirSync(path.dirname(f), { recursive: true })
+    writeFileSync(f, JSON.stringify(next, null, 2), 'utf8')
+  } catch (e) { /* 只读环境忽略 */ }
+  return next
+}
+
+/** 校验安装目录:必须是绝对路径,且不能在 C 盘。 */
+function validateEnvDir(dir) {
+  const d = String(dir || '').trim()
+  if (!d) return { valid: false, reason: '请先选择安装位置(不要装在 C 盘)' }
+  if (!/^[A-Za-z]:[\\/]/.test(d) && !d.startsWith('\\\\')) {
+    return { valid: false, reason: '请填写绝对路径,例如 D:\\dsh-manga-env' }
+  }
+  const drive = /^([A-Za-z]):/.exec(d)
+  if (drive && drive[1].toUpperCase() === 'C') {
+    return { valid: false, reason: '禁止安装在 C 盘,请换一个盘(如 D:\\dsh-manga-env)' }
+  }
+  return { valid: true, reason: '' }
+}
+
+/** 给用户推荐几个非 C 盘位置(取存在的第一个盘)。 */
+function suggestEnvDirs() {
+  const out = []
+  for (const letter of ['D', 'E', 'F', 'G', 'H']) {
+    const root = letter + ':\\'
+    try {
+      if (existsSync(root)) {
+        out.push(path.join(letter + ':', 'dsh-manga-env'))
+        out.push(path.join(letter + ':', 'manga-env'))
+      }
+    } catch (e) { /* 无此盘 */ }
+  }
+  return out.slice(0, 4)
+}
+
+
+
 function probePython(cmd) {
   try {
     const out = execFileSync(cmd, ['-c', 'import sys;print("%d.%d" % sys.version_info[:2])'],
@@ -183,11 +236,16 @@ function probePython(cmd) {
   return null
 }
 
-function pythonCandidates({ pythonPath, pluginDir }) {
+function pythonCandidates({ pythonPath, pluginDir, envDir: envDirArg }) {
   const out = []
   const add = (p, source) => { if (p) out.push({ path: p, source }) }
   add(pythonPath, '插件配置')
   add(process.env.DSH_MANGA_PYTHON, '环境变量 DSH_MANGA_PYTHON')
+  const envDir = String(envDirArg || '').trim()
+  if (envDir) {
+    add(path.join(envDir, 'Scripts', 'python.exe'), '安装位置')
+    add(path.join(envDir, 'bin', 'python'), '安装位置')
+  }
   if (pluginDir) {
     add(path.join(pluginDir, '_venv', 'Scripts', 'python.exe'), '插件内置环境')
     add(path.join(pluginDir, '_venv', 'bin', 'python'), '插件内置环境')
@@ -208,11 +266,13 @@ function isCommandName(p) {
 export function resolveRuntime({ pythonPath, scriptsDir, toolScriptsDir, config, refresh } = {}) {
   const cfg = config || {}
   const pluginDir = toolScriptsDir ? path.dirname(toolScriptsDir) : null
-  const cacheKey = [pythonPath, pluginDir].join('|')
+  const cacheKey = [pythonPath, pluginDir, cfg.envDir || ''].join('|')
   let py = refresh ? null : _PY_CACHE.get(cacheKey)
   if (!py) {
     py = { path: cfg.pythonPath || 'python', version: '', source: '未找到', ok: false }
-    for (const c of pythonCandidates({ pythonPath: cfg.pythonPath || pythonPath, pluginDir })) {
+    for (const c of pythonCandidates({
+      pythonPath: cfg.pythonPath || pythonPath, pluginDir, envDir: cfg.envDir,
+    })) {
       if (!isCommandName(c.path) && !existsSync(c.path)) continue
       if (existsSync(c.path) || isCommandName(c.path)) {
         const p = probePython(c.path)
@@ -271,7 +331,12 @@ function imageSizeOf(pythonPath, file) {
 }
 
 export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scriptsDirCfg, toolScriptsDir, runtimeEnv, config, getDirectoryPicker }) {
-  const _rt0 = resolveRuntime({ pythonPath: pythonPathCfg, scriptsDir: scriptsDirCfg, toolScriptsDir, config })
+  const SETUP_HOME = os.homedir()
+  const envDirCfg = () => readSetupCfg(SETUP_HOME).envDir
+  const _rt0 = resolveRuntime({
+    pythonPath: pythonPathCfg, scriptsDir: scriptsDirCfg, toolScriptsDir,
+    config: { ...(config || {}), envDir: envDirCfg() },
+  })
   const pythonPath = _rt0.python.path
   const scriptsDir = _rt0.scripts.dir
   const PLUGIN_DIR = _rt0.pluginDir
@@ -414,19 +479,29 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
 
   function pickPython(refresh) {
     const rt = resolveRuntime({
-      pythonPath: pythonPathCfg, scriptsDir: scriptsDirCfg, toolScriptsDir, config, refresh,
+      pythonPath: pythonPathCfg, scriptsDir: scriptsDirCfg, toolScriptsDir,
+      config: { ...(config || {}), envDir: envDirCfg() }, refresh,
     })
     if (refresh) _PY_CACHE.clear()
     return rt.python
   }
 
   function installDeps(tier, onData) {
+    const envDir = envDirCfg()
+    const v = validateEnvDir(envDir)
+    if (!v.valid) {
+      onData && onData('[错误] ' + v.reason + '\n')
+      return Promise.resolve({ code: -1, out: '', err: v.reason })
+    }
     const runCmd = (cmd, args) => new Promise((resolve) => {
       let out = ''
       let err = ''
       let child
       try {
-        child = spawn(cmd, args, { env: { ...process.env, ...(runtimeEnv || {}) }, windowsHide: true })
+        child = spawn(cmd, args, {
+          env: { ...process.env, ...(runtimeEnv || {}), MANGA_ENV_DIR: envDir },
+          windowsHide: true,
+        })
       } catch (e) {
         return resolve({ code: -1, out: '', err: String(e) })
       }
@@ -435,17 +510,20 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
       child.on('close', (code) => resolve({ code, out, err }))
       child.on('error', (e) => resolve({ code: -1, out, err: err + String(e) }))
     })
-    const venvDir = path.join(PLUGIN_DIR || '.', '_venv')
     const venvPy = process.platform === 'win32'
-      ? path.join(venvDir, 'Scripts', 'python.exe')
-      : path.join(venvDir, 'bin', 'python')
+      ? path.join(envDir, 'Scripts', 'python.exe')
+      : path.join(envDir, 'bin', 'python')
     const py = pickPython()
     return (async () => {
       if (!existsSync(venvPy)) {
-        onData && onData('[1/3] 创建独立运行环境:' + venvDir + '\n')
+        onData && onData('[1/3] 创建独立运行环境:' + envDir + '\n')
+        try { mkdirSync(envDir, { recursive: true }) } catch (e) { /* 已存在 */ }
         const base = py.ok ? py.path : 'python'
-        const r = await runCmd(base, ['-m', 'venv', venvDir])
-        if (r.code !== 0) return r
+        const r = await runCmd(base, ['-m', 'venv', envDir])
+        if (r.code !== 0) {
+          onData && onData('[错误] 创建环境失败,可能该目录不可写或没有安装 Python\n')
+          return r
+        }
       }
       const target = existsSync(venvPy) ? venvPy : py.path
       onData && onData('[2/3] 升级 pip\n')
@@ -524,7 +602,7 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
   }
 
   async function runStep(folder, step, onData) {
-    const env = { ...runtimeEnv }
+    const env = { ...runtimeEnv, MANGA_ENV_DIR: envDirCfg() }
     let args = null
     let label = step
     if (step === 'ocr') {
@@ -786,15 +864,48 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
       for (const t of ['base', 'ocr', 'gpu']) {
         reqs[t] = existsSync(path.join(scriptsDir, 'requirements-' + t + '.txt'))
       }
+      const envDir = envDirCfg()
+      const envInfo = validateEnvDir(envDir)
+      const envVenvPy = envDir
+        ? (process.platform === 'win32'
+            ? path.join(envDir, 'Scripts', 'python.exe')
+            : path.join(envDir, 'bin', 'python'))
+        : ''
       return json(res, 200, {
         python: py,
         scripts: { dir: scriptsDir, source: _rt0.scripts.source, missing },
         deps,
         missingCount: deps.filter((d) => !d.ok).length,
-        venv: { dir: venvDir, exists: existsSync(venvPy) },
+        env: {
+          dir: envDir,
+          valid: envInfo.valid,
+          reason: envInfo.reason,
+          hasVenv: envVenvPy ? existsSync(envVenvPy) : false,
+          suggestions: suggestEnvDirs(),
+          file: setupCfgFile(SETUP_HOME),
+        },
+        venv: { dir: envDir || venvDir, exists: envVenvPy ? existsSync(envVenvPy) : false },
         requirements: reqs,
         pluginDir: PLUGIN_DIR,
       })
+    }
+
+    // 安装位置:GET 读取,POST 保存(禁止 C 盘)
+    if (name === 'setup/env') {
+      if (req.method === 'POST') {
+        const raw = await readBody(req)
+        let body = {}
+        try { body = JSON.parse(raw || '{}') } catch {}
+        const dir = String(body.dir || '').trim()
+        const v = validateEnvDir(dir)
+        if (!v.valid) return json(res, 400, { ok: false, error: v.reason })
+        writeSetupCfg(SETUP_HOME, { envDir: dir })
+        _PY_CACHE.clear()
+        return json(res, 200, { ok: true, envDir: dir })
+      }
+      const dir = envDirCfg()
+      const v = validateEnvDir(dir)
+      return json(res, 200, { envDir: dir, valid: v.valid, reason: v.reason, suggestions: suggestEnvDirs() })
     }
 
     // 运行环境:一键安装依赖(base / ocr / gpu),返回 jobId 供轮询

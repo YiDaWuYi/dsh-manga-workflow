@@ -185,7 +185,8 @@ def draw_htext(draw, text, x, y, w, h, size, st):
     return fits
 
 
-IOPAINT_BIN = os.path.join(BASE, '_venv', 'Scripts', 'iopaint.exe')
+_ENV_DIR = os.environ.get('MANGA_ENV_DIR') or os.path.join(BASE, '_venv')
+IOPAINT_BIN = os.path.join(_ENV_DIR, 'Scripts', 'iopaint.exe')
 LAMA_TMP = os.path.join(BASE, '_lama_io')
 
 def lama_erase(img, boxes, zh_list):

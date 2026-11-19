@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-manga-workflow',
   factory(require) {
   // 版本号(发布时同步 package.json / 桌面端 mark_tool.py)
-  const APP_VERSION = 'V1.7';
+  const APP_VERSION = 'V1.8';
 
     const React = require('react');
     const h = React.createElement;
@@ -1010,6 +1010,54 @@ window.__ModuleLoader__.load({
             : setup.error
               ? h('div', { style: { color: '#ff8080' } }, '检测失败:' + setup.error)
               : h(React.Fragment, null,
+                  (function renderEnvDir() {
+                    const env = setup.env || {};
+                    const valid = !!env.valid;
+                    return h(React.Fragment, null,
+                      h('div', { style: S.row },
+                        h('span', { style: { ...S.muted, width: '64px' } }, '安装位置'),
+                        h('span', {
+                          style: { fontSize: '11px', wordBreak: 'break-all',
+                                   color: valid ? 'inherit' : '#ff8080' },
+                        }, env.dir || '(未选择)'),
+                        h('button', {
+                          type: 'button', style: S.btn,
+                          onClick: async () => {
+                            try {
+                              const p = await api('/pick', {});
+                              if (p && p.path) {
+                                await api('/setup/env', { dir: p.path });
+                                await refreshSetup();
+                                setSetupLog('安装位置已设为:' + p.path);
+                              } else if (p && p.error) {
+                                setSetupLog('未选择目录:' + p.error);
+                              }
+                            } catch (e) {
+                              setSetupLog('选择目录失败:' + String(e.message || e));
+                            }
+                          },
+                        }, '选择目录…'),
+                        (env.suggestions || []).slice(0, 2).map((sug) => h('button', {
+                          key: sug, type: 'button', style: S.btn,
+                          onClick: async () => {
+                            try {
+                              await api('/setup/env', { dir: sug });
+                              await refreshSetup();
+                              setSetupLog('安装位置已设为:' + sug);
+                            } catch (e) {
+                              setSetupLog('设置失败:' + String(e.message || e));
+                            }
+                          },
+                        }, '用 ' + sug)),
+                      ),
+                      h('div', {
+                        style: { ...S.muted, fontSize: '10px', marginTop: '-2px',
+                                 marginBottom: '4px', color: valid ? '#888' : '#ff8080' },
+                      }, valid
+                        ? '依赖会装到这里(禁止写 C 盘);已存在的环境请用「选择目录…」指定'
+                        : (env.reason || '请先选择非 C 盘的安装位置')),
+                    );
+                  })(),
                   h('div', { style: S.row },
                     h('span', { style: { ...S.muted, width: '64px' } }, 'Python'),
                     h('span', { style: { fontSize: '11px', wordBreak: 'break-all' } },
@@ -1053,22 +1101,28 @@ window.__ModuleLoader__.load({
                   ),
                   h('div', { style: { ...S.row, marginTop: '6px' } },
                     h('button', { type: 'button', style: S.btn, onClick: refreshSetup }, '重新检测'),
-                    h('button', {
-                      type: 'button', style: S.btn, disabled: !!setupBusy,
-                      onClick: () => installDeps('base'),
-                    }, setupBusy === 'base' ? '安装中…' : '装基础依赖'),
-                    h('button', {
-                      type: 'button', style: S.btn, disabled: !!setupBusy,
-                      onClick: () => installDeps('ocr'),
-                    }, setupBusy === 'ocr' ? '安装中…' : '装 OCR 依赖(含 torch,大)'),
-                    h('button', {
-                      type: 'button', style: S.btn, disabled: !!setupBusy,
-                      onClick: () => installDeps('gpu'),
-                    }, setupBusy === 'gpu' ? '安装中…' : '装 GPU 去字(可选)'),
+                    (function () {
+                      const ok = !!(setup.env && setup.env.valid);
+                      const hint = ok ? undefined : '请先在「安装位置」选择非 C 盘目录';
+                      return h(React.Fragment, null,
+                        h('button', {
+                          type: 'button', style: S.btn, disabled: !!setupBusy || !ok, title: hint,
+                          onClick: () => installDeps('base'),
+                        }, setupBusy === 'base' ? '安装中…' : '装基础依赖'),
+                        h('button', {
+                          type: 'button', style: S.btn, disabled: !!setupBusy || !ok, title: hint,
+                          onClick: () => installDeps('ocr'),
+                        }, setupBusy === 'ocr' ? '安装中…' : '装 OCR 依赖(含 torch,大)'),
+                        h('button', {
+                          type: 'button', style: S.btn, disabled: !!setupBusy || !ok, title: hint,
+                          onClick: () => installDeps('gpu'),
+                        }, setupBusy === 'gpu' ? '安装中…' : '装 GPU 去字(可选)'),
+                      );
+                    })(),
                   ),
                   h('div', { style: { ...S.muted, fontSize: '10px', marginTop: '2px' } },
-                    '首次使用请先「装基础依赖」;要本地 OCR 再装 OCR 依赖(约 2GB);GPU 去字可选。'
-                    + ' 依赖会装到插件目录下的 _venv 里,不影响系统 Python。'),
+                    '首次使用:先选「安装位置」(禁止 C 盘)→ 点「装基础依赖」;要本地 OCR 再装 OCR 依赖(约 2GB)。'
+                    + ' 依赖全部装到你选的位置,不影响系统 Python 和 C 盘。'),
                   setupLog
                     ? h('pre', {
                         style: { marginTop: '6px', maxHeight: '180px', overflow: 'auto',
