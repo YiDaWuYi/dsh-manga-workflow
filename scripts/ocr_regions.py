@@ -41,9 +41,9 @@ def main():
             return ' '.join(r.readtext(np.array(c), detail=0))
 
     out = os.path.join(src, 'ocr_text.json')
+    # 始终合并已有结果:本次没处理的页(无框/被跳过)不会丢 OCR
     result = {}
-    # 指定 --page 时只更新该页,合并进已有结果(不覆盖其它页)
-    if only_page and os.path.exists(out):
+    if os.path.exists(out):
         try:
             result = json.load(open(out, encoding='utf-8'))
         except Exception:

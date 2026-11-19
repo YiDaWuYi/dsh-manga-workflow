@@ -144,7 +144,7 @@ class MarkTool:
         tk.Button(top, text="自动识别(OCR)", command=self.run_ocr).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="自动标框", command=self.auto_detect).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="刷新", command=self.refresh).pack(side=tk.LEFT, padx=4)
-        tk.Button(top, text="一键识别(标框+OCR)", command=self.one_click).pack(side=tk.LEFT, padx=4)
+        tk.Button(top, text="一键识别(整本:标框+OCR)", command=self.one_click).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="重标同步", command=self.resync).pack(side=tk.LEFT, padx=(4, 0))
         tk.Button(top, text="校对(嵌字前)", command=self.proofread_pre).pack(side=tk.LEFT, padx=4)
         ttk.Combobox(top, textvariable=self.proof_mode, values=["原文+译文", "只校原文"],
@@ -190,7 +190,7 @@ class MarkTool:
                   ).pack(side=tk.LEFT, padx=(4, 0))
         self._refresh_style_buttons()
 
-        tk.Label(self.root, text="操作: 左键拖框/涂抹 · 右键删框 · 双击改原文和译文 · N=拟声词/艺术字 · E=抹除原文 · F5 刷新 · 样式按钮点一下即选中",
+        tk.Label(self.root, text="操作: 左键拖框/涂抹 · 右键删框 · 双击改原文和译文 · N=拟声词/艺术字 · E=抹除原文 · F5 刷新 · 样式按钮点一下即选中 · 一键识别=整本",
                  fg="#888", anchor="w").pack(side=tk.TOP, fill=tk.X, padx=6)
 
         self.canvas = tk.Canvas(self.root, bg="#333", cursor="crosshair")
@@ -988,70 +988,96 @@ class MarkTool:
 
     # ---------- 一键识别(标框 → OCR) ----------
     def one_click(self):
-        """一键:按范围先自动标框,再自动识别。"""
-        if self._job_running() or getattr(self, '_detect_running', False) or getattr(self, '_ocr_running', False):
+        """一键识别:整本自动标框 → 整本 OCR(与「范围」无关,始终处理整本)。
+
+        状态栏实时显示两个脚本的进度行。处理完自动重载当前页数据。
+        """
+        if self._job_running() or getattr(self, '_ocr_running', False):
             messagebox.showinfo('提示', '正在处理中,请稍候...')
             return
-        import threading, queue, subprocess
+        import threading, queue
         here, vpy, env = self._job_env()
         self._save()
-        scope = self.scope.get()
-        key = self._page_key()
         self._ocr_running = True
         self._one_queue = queue.Queue()
-        self.status.config(text='一键识别:自动标框中...')
+        self.status.config(text='一键识别:整本自动标框中...')
         self.root.configure(cursor='watch')
         q = self._one_queue
 
+        def stream(cmd, timeout):
+            """跑子进程,逐行把进度推到状态栏,返回 (退出码, 全部行, 错误尾巴)。
+
+            关键:stderr 合并进 stdout —— 否则子进程把日志写满 stderr 管道会卡死;
+            另起看门狗线程,超时直接杀进程,避免永久卡住。
+            """
+            import subprocess as sp
+            lines = []
+            p = sp.Popen(cmd, env=env, stdout=sp.PIPE, stderr=sp.STDOUT,
+                         text=True, encoding='utf-8', errors='replace', bufsize=1,
+                         creationflags=getattr(sp, 'CREATE_NO_WINDOW', 0))
+            killed = {'timeout': False}
+
+            def watchdog():
+                try:
+                    p.wait(timeout=timeout)
+                except Exception:
+                    killed['timeout'] = True
+                    try:
+                        p.kill()
+                    except Exception:
+                        pass
+
+            threading.Thread(target=watchdog, daemon=True).start()
+            for raw in iter(p.stdout.readline, ''):
+                ln = raw.rstrip()
+                if not ln:
+                    continue
+                lines.append(ln)
+                # 只把「进度/关键」行推到状态栏,避免 INFO 日志刷屏
+                if ('进度' in ln) or ('完成' in ln) or ('新增' in ln):
+                    self.root.after(0, lambda l=ln: self.status.config(text='一键识别: ' + l))
+            code = p.wait()
+            if killed['timeout']:
+                raise RuntimeError('处理超时(%d 秒),已终止。可改用「自动标框」+「自动识别」分步执行' % timeout)
+            return code, lines, ''
+
         def worker():
-            err = None
+            err_msg = None
             info = ''
             try:
-                # 1) 自动标框
-                if scope == 'book':
-                    bflag = [] if self.bubble_only.get() else ['--all']
-                    r = subprocess.run([vpy, os.path.join(here, 'detect_book.py'), self.src_dir] + bflag,
-                                       env=env, capture_output=True, text=True, encoding='utf-8',
-                                       errors='replace', timeout=7200)
-                    if r.returncode != 0:
-                        raise RuntimeError((r.stderr or '')[-600:])
-                    s = json.loads((r.stdout or '').strip().splitlines()[-1])
-                    info = f"标框 {s.get('boxes', 0)} 个"
-                else:
-                    img_path = os.path.join(self.src_dir, self.pages[self.idx])
-                    dflag = [] if self.bubble_only.get() else ['--all']
-                    r = subprocess.run([vpy, os.path.join(here, 'detect_boxes.py'), img_path] + dflag,
-                                       env=env, capture_output=True, text=True, encoding='utf-8',
-                                       errors='replace', timeout=300)
-                    if r.returncode != 0:
-                        raise RuntimeError((r.stderr or '')[-600:])
-                    data = json.loads((r.stdout or '').strip().splitlines()[-1])
-                    boxes = data.get('boxes', []) if isinstance(data, dict) else data
-                    # 合并进 regions.json(当前页)
-                    reg = {}
-                    if os.path.exists(self.regions_file):
-                        reg = json.load(open(self.regions_file, encoding='utf-8'))
-                    cur = reg.get(key, [])
-                    for b in boxes:
-                        cur.append({'x': b['x'], 'y': b['y'], 'w': b['w'], 'h': b['h'],
-                                    'vertical': True, 'size': 20,
-                                    'erase': True, 'sfx': False, 'color': 'black', 'outline': False,
-                                    'auto': True})
-                    reg[key] = cur
-                    json.dump(reg, open(self.regions_file, 'w', encoding='utf-8'),
-                              ensure_ascii=False, indent=1)
-                    info = f"标框 {len(boxes)} 个"
-                # 2) 自动识别
-                cmd = [vpy, os.path.join(here, 'ocr_regions.py'), self.src_dir, '--lang', self.lang.get()]
-                if scope == 'page':
-                    cmd += ['--page', key]
-                r2 = subprocess.run(cmd, env=env, capture_output=True, text=True,
-                                    encoding='utf-8', errors='replace', timeout=7200)
-                if r2.returncode != 0:
-                    raise RuntimeError((r2.stderr or '')[-600:])
+                # ---- 1) 整本自动标框 ----
+                bflag = [] if self.bubble_only.get() else ['--all']
+                code, lines, serr = stream(
+                    [vpy, os.path.join(here, 'detect_book.py'), self.src_dir] + bflag, 7200)
+                if code != 0:
+                    raise RuntimeError((serr or '')[-600:] or '自动标框失败')
+                meta = {}
+                for ln in reversed(lines):
+                    if ln.strip().startswith('{'):
+                        try:
+                            meta = json.loads(ln)
+                        except Exception:
+                            meta = {}
+                        break
+                n_pages = meta.get('pages', 0)
+                n_boxes = meta.get('boxes', 0)
+                # ---- 2) 整本 OCR(不带 --page)----
+                code2, lines2, serr2 = stream(
+                    [vpy, os.path.join(here, 'ocr_regions.py'), self.src_dir, '--lang', self.lang.get()], 7200)
+                if code2 != 0:
+                    raise RuntimeError((serr2 or '')[-600:] or 'OCR 失败')
+                ocr_pages = 0
+                for ln in reversed(lines2):
+                    if 'OCR 完成' in ln:
+                        try:
+                            ocr_pages = int(ln.split('OCR 完成:')[1].strip().split(' ')[0])
+                        except Exception:
+                            pass
+                        break
+                info = '整本 %d 页,新增框 %d 个,OCR %d 页' % (n_pages, n_boxes, ocr_pages)
             except Exception as e:
-                err = str(e)
-            q.put((err, info))
+                err_msg = str(e)
+            q.put((err_msg, info))
 
         threading.Thread(target=worker, daemon=True).start()
         self.root.after(200, self._poll_one)
@@ -1074,7 +1100,7 @@ class MarkTool:
         self.box_text = self._load(self.ocr_file)
         self.trans = self._load(self.trans_file)
         self._load_page()
-        messagebox.showinfo('一键识别完成', f"{info},OCR 完成。\n橙色为原文,青色为译文,双击可修改。")
+        messagebox.showinfo('一键识别完成', f"{info}。\n橙色为原文,青色为译文,双击可修改。\n(一键识别始终处理整本;只做当前页请用「自动识别(OCR)」)")
 
     def _box_at(self, e):
         for i, b in enumerate(self.page_boxes):
@@ -1556,7 +1582,7 @@ def _style_preview_photo(style_id, w=54, h=30):
 
 
 # ---------------- 版本 ----------------
-APP_VERSION = 'V1.8'
+APP_VERSION = 'V1.8.1'
 
 # ---------------- 帮助窗口(程序内渲染,不依赖 .md 文件关联)----------------
 
