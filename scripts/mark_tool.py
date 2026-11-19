@@ -318,7 +318,7 @@ class MarkTool:
         except Exception:
             pass
 
-        self._hint_label = tk.Label(self.root, text="操作: 左键拖框/自由框选 · 单击框=选中(改设置实时写回) · 右键删框 · 双击改原文和译文 · 1/2/3=类型 · E=原文处理 · G=GPU · T=翻译 · O=识别 · F5 刷新 · 一键识别=整本",
+        self._hint_label = tk.Label(self.root, text="单击框 = 编辑属性(选中后改设置实时写回) · 双击框 = 编辑文字(原文/译文) · 左键拖框/自由框选 · 右键删框 · 1/2/3=类型 · E=原文处理 · G=GPU · T=翻译 · O=识别 · F5 刷新",
                  fg="#888", anchor="w")
         self._hint_label.pack(side=tk.TOP, fill=tk.X, padx=6)
 
@@ -2727,7 +2727,7 @@ def _style_preview_photo(style_id, w=54, h=30, font=''):
 
 
 # ---------------- 版本 ----------------
-APP_VERSION = 'V1.11'
+APP_VERSION = 'V1.12'
 
 # ---------------- 帮助窗口(程序内渲染,不依赖 .md 文件关联)----------------
 

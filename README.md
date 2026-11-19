@@ -2,6 +2,10 @@
 
 > 版本更新记录见 [CHANGELOG.md](./CHANGELOG.md);发版规则见 [RELEASING.md](./RELEASING.md)。
 
+> **🚀 v1.12.0:DSH 全面接管** —— 网页端新增「拟声词识别填词 / DSH汉化模式 / 单页识图翻译」,
+> 「确认嵌字」带**前置体检**(数组对齐/无效译文拦截/艺术字排除)与**预计消耗**显示;双端页码直达、
+> 版本检测、校对白名单与结构检查、拟声词溢出兜底。详见 [CHANGELOG](./CHANGELOG.md)。
+>
 > **⚠️ v1.10.0 是大改动版本**:标注体系整体重做(类型/原文处理/按框 GPU/三组样式+字体),
 > 翻译改为**引擎优先级**(DSH 模型 / AI 接口 / 免费兜底),新增**全自动**、**同步(仅配对)**、
 > **DSH 本机桥**(桌面端免 Key 用 DSH 模型),网页端同步全部标注能力。
@@ -245,7 +249,7 @@ DeepSeek Harness 的漫画汉化工作流插件:本地 OCR(日/韩/英)、GPU �
 ### 方式一:从 GitHub Release tarball(推荐)
 
 ```sh
-dsh plugin --profile <你的profile> add https://github.com/YiDaWuYi/dsh-manga-workflow/releases/download/v1.11.0/dsh-manga-workflow-1.11.0.tgz
+dsh plugin --profile <你的profile> add https://github.com/YiDaWuYi/dsh-manga-workflow/releases/download/v1.12.0/dsh-manga-workflow-1.12.0.tgz
 ```
 
 或在 DSH 的 **插件 → 添加插件** 里填这个 tarball 地址。

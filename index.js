@@ -245,6 +245,34 @@ export function apply(ctx, config = {}) {
   })
 
   ctx.tools.register({
+    name: 'manga_dsh_translate',
+    description: 'Translate a manga folder using the DSH model via the local bridge (no API key). Writes trans.json. Use for boxes that have no translation yet.',
+    parameters: {
+      folder: { type: 'string', required: true, description: 'Absolute path to the manga folder.' },
+      page: { type: 'string', description: 'Optional page key to translate only that page.' },
+    },
+    output: TEXT_OUTPUT,
+    async execute(args) {
+      const hostFile = path.join(os.homedir(), '.manga-workflow', 'host.json')
+      let info = {}
+      try { info = JSON.parse(readFileSync(hostFile, 'utf8')) } catch (e) { info = {} }
+      if (!info.port || !info.token) return { text: 'DSH 本机桥不可用(DSH 未运行或插件未加载)' }
+      try {
+        const r = await fetch('http://127.0.0.1:' + info.port + '/translate-dsh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-manga-token': info.token },
+          body: JSON.stringify({ folder: args.folder, page: args.page || null, overwrite: false }),
+        })
+        const j = await r.json()
+        if (!j.ok) return { text: 'DSH 翻译失败:' + (j.error || ('HTTP ' + r.status)) }
+        return { text: 'DSH 翻译完成:' + (j.done || 0) + ' 条' }
+      } catch (e) {
+        return { text: 'DSH 翻译调用失败:' + String(e && e.message || e) }
+      }
+    },
+  })
+
+  ctx.tools.register({
     name: 'manga_report',
     description: 'Read the pending manga embed report queued by the web panel (workspace pending_report.json) and return it; marks it consumed.',
     parameters: {},

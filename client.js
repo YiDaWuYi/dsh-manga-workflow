@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-manga-workflow',
   factory(require) {
   // 版本号(发布时同步 package.json / 桌面端 mark_tool.py)
-  const APP_VERSION = 'V1.11';
+  const APP_VERSION = 'V1.12';
 
     const React = require('react');
     const h = React.createElement;
@@ -540,7 +540,11 @@ window.__ModuleLoader__.load({
       ['视觉引擎(设置)', '✅ 两端共用同一份配置', '✅ 同一份配置'],
       ['侧边栏/提示开关', '✅ 设置里可开关(共享)', '✅ 改同一份共享配置'],
       ['互相启动', '✅ 一键「启动桌面版」', '—'],
-      ['确认嵌字', '✅ 先自动校对 → 弹窗确认 → 嵌字 → 自动校对输出 → 报告', '✅ 全自动按钮(不含嵌字)+ 嵌字'],
+      ['确认嵌字', '✅ 体检 → 校对 → 页面内确认 → 嵌字 → 表单+预览', '✅ 按钮交给网页端执行'],
+      ['DSH 接管模式', '✅ 拟声词识别填词 / DSH汉化模式 / 单页识图翻译', '❌ 仅网页端'],
+      ['预计消耗', '✅ 点击时显示 ¥ 区间与框数', '❌ 仅网页端'],
+      ['页码直达', '✅ [页码]跳/回车', '✅ ◀ [页码] 跳 ▶'],
+      ['版本检测', '✅ 启动页每天自动 + 检查更新', '✅ 启动页每天自动 + 检查更新'],
       ['长任务', '异步任务 + 日志轮询', '后台线程 + 状态栏流式进度'],
       ['中断任务', '❌ 只能等它跑完', '✅「取消当前任务」杀进程树'],
     ];
@@ -563,8 +567,11 @@ window.__ModuleLoader__.load({
         '0. (可选)先到「设置」配好视觉引擎 —— 想让 AI 帮你看图才需要',
         '1. 启动页点「浏览…」选文件夹,或直接粘贴路径 → 开始',
         '2. 工作台里画框(框选/自由框选),选好类型(正文/拟声/标题)、原文处理、方向、字号',
-        '3. 点 OCR 识别原文 → 4. 点 翻译(或「单页识图翻译」:当前页交视觉引擎读原文 + DSH 模型翻译)',
-        '5. 点「确认嵌字」(会先自动校对,确认后嵌字)',
+        '3. 点 OCR 识别原文 → 4. 点 翻译',
+        '· 自动汉化问题多时,直接用「DSH汉化模式」(整本视觉识别+DSH翻译+校对)',
+        '· 只有拟声词读错时,用「拟声词识别填词」(本页拟声词交给 DSH)',
+        '· 只补当前页,用「单页识图翻译」',
+        '5. 点「确认嵌字」:自动体检(数组对齐/无效译文/艺术字) → 校对 → 页面内确认 → 嵌字 → 表单+预览',
         '7. 改动后点「保存」(Ctrl+S);换页会丢掉未保存的改动',
         '8. 需要精细标注时点「启动桌面版」切到桌面工具(桌面端可「取消当前任务」)',
       ];
@@ -752,6 +759,34 @@ window.__ModuleLoader__.load({
               '【记忆】每种类型各自记住上次的原文处理/GPU,切换类型自动恢复(仅本次页面会话)',
               '【方向】自动检测 / 竖排 / 横排;【字号】手动 + 自动字号(拟声放大、正文缩到框内)',
               '【拟声词默认】译文直盖(不擦原字);要擦除请把处理改成「抹除」',
+            ],
+            style: S.muted,
+          }),
+        ),
+        h('div', { style: S.box },
+          h('div', { style: boxTitle }, '八·补充2、DSH 接管模式与花费'),
+          h(HelpLines, {
+            lines: [
+              '【确认嵌字】(默认,面板内完成)',
+              '· 自动体检:数组对齐、缺译文清单、数字/拉丁无效译文拦截、艺术字排除(标题豁免)',
+              '· 再跑嵌字前校对 → 页面内黄色卡片确认 → 嵌字(脚本内自动再校对) → 表单 + 可切换预览',
+              '【交给对话】',
+              '· 写请求到工作区,回对话里说「执行嵌字」,由 DSH 在对话里执行并汇报',
+              '【单页识图翻译】',
+              '· 当前页所有框:视觉引擎读原文 → DSH 模型翻译(覆盖)',
+              '【拟声词识别填词】',
+              '· 本页拟声词:视觉识别 → DSH 翻译 → 自动设为参与嵌字',
+              '【DSH汉化模式】(整本接管)',
+              '· 整本视觉识别 → DSH 翻译 → 设为参与嵌字 → 校对;耗时与花费较高,点击前会显示预计消耗',
+              '',
+              '【预计消耗怎么算】',
+              '· 视觉识别按框计费:约 ¥0.01~0.09/框(取决于裁剪大小与模型)',
+              '· DSH 翻译走 DSH 额度,不额外计费;本地嵌字免费',
+              '· 三个入口(拟声词识别填词 / DSH汉化模式 / 交给对话)都会先弹确认卡片显示框数与 ¥ 区间',
+              '',
+              '【auto 框】自动标框产生的框默认不参与嵌字;可用「本页auto→参与 / 仅补有译文的 / 全书auto参与」批量处理,',
+              '或勾「体检时auto参与」让体检自动把有译文的 auto 框纳入。',
+              '【嵌字工作区】设置里指定目录:嵌字报告写入工作区 manga_reports/;未设置时启动页会提示。',
             ],
             style: S.muted,
           }),
@@ -1601,6 +1636,8 @@ h('div', { style: S.row },
       const [wsExists, setWsExists] = React.useState(true);
       const [verInfo, setVerInfo] = React.useState(null);
       const [confirmDlg, setConfirmDlg] = React.useState(null);
+      const [previewPg, setPreviewPg] = React.useState('');
+      const [pfAuto, setPfAuto] = React.useState(false);   // 体检时让有译文的 auto 框参与
       const [log, setLog] = React.useState('');
       const [jumpNo, setJumpNo] = React.useState('');
       const jumpPage = () => {
@@ -1821,6 +1858,38 @@ h('div', { style: S.row },
         }
       }
 
+      async function autoParticipateAll() {
+        if (!folder || loading) return;
+        setLoading(true);
+        setMsg('全书 auto 框参与中…');
+        try {
+          const d = await api('/status?folder=' + encodeURIComponent(folder));
+          let n = 0;
+          for (const p of (d.pages || [])) {
+            if (!p.boxes) continue;
+            const r = await api('/regions?folder=' + encodeURIComponent(folder)
+              + '&page=' + encodeURIComponent(p.page));
+            const boxes = r.boxes || [];
+            const tr = r.trans || [];
+            const nb = boxes.map((b, i) => (
+              b.auto && tr[i] && String(tr[i]).trim() ? { ...b, auto: false } : b
+            ));
+            const changed = nb.filter((b, i) => b.auto !== boxes[i].auto).length;
+            if (changed) {
+              await api('/save', { folder, page: p.page, boxes: nb, edits: [] });
+              n += changed;
+            }
+          }
+          await refresh();
+          if (page) await loadPage(page);
+          setMsg('已让 ' + n + ' 个有译文的 auto 框参与嵌字');
+        } catch (e) {
+          setMsg('操作失败:' + String(e.message || e));
+        } finally {
+          setLoading(false);
+        }
+      }
+
       async function applyStyleAll() {
         setMsg('正在应用到全部…');
         try {
@@ -1875,6 +1944,75 @@ h('div', { style: S.row },
         }
       }
 
+      async function costEstimate(scope, pageOnly) {
+        try {
+          return await api('/cost-estimate', {
+            folder, page: pageOnly ? page : null, scope,
+          });
+        } catch (e) { return null; }
+      }
+      const money = (e) => (e && Number.isFinite(e.yuanMin)
+        ? ('¥' + e.yuanMin.toFixed(2) + ' ~ ¥' + e.yuanMax.toFixed(2))
+        : '未知');
+
+      async function runDshJob(pathUrl, body, label) {
+        if (!folder || loading) return;
+        setLoading(true);
+        try {
+          const { jobId } = await api(pathUrl, body);
+          let lastLog = '';
+          for (;;) {
+            await new Promise((r) => setTimeout(r, 1200));
+            const j = await api(`/job?id=${encodeURIComponent(jobId)}`);
+            if (j.log && j.log !== lastLog) { lastLog = j.log; setLog(j.log); }
+            if (j.status !== 'running') {
+              setLog(`[${label}] exit=${j.code}\n${j.log || ''}`);
+              break;
+            }
+          }
+          await refresh();
+          if (page) await loadPage(page);
+          setMsg(label + '完成');
+        } catch (e) {
+          setMsg(label + '失败:' + String(e.message || e));
+        } finally {
+          setLoading(false);
+        }
+      }
+
+      async function dshSfx() {
+        if (!folder || loading) return;
+        const est = await costEstimate('sfx', true);
+        setConfirmDlg({
+          title: '拟声词识别填词(DSH 接管)',
+          body: `本页拟声词框:${est ? est.boxes : '?'} 个(其中未翻译 ${est ? est.todo : '?'})\n`
+            + `预计消耗:${money(est)}\n`
+            + '流程:视觉引擎识别 → DSH 翻译 → 自动设为参与嵌字\n\n开始吗?',
+          okText: '开始',
+          onOk: async () => {
+            setConfirmDlg(null);
+            await runDshJob('/dsh-sfx', { folder, page }, '拟声词识别填词');
+          },
+        });
+      }
+
+      async function dshFull() {
+        if (!folder || loading) return;
+        const est = await costEstimate('all', false);
+        setConfirmDlg({
+          title: 'DSH 汉化模式(整本接管)',
+          body: `整本框数:${est ? est.boxes : '?'} 个(未翻译 ${est ? est.todo : '?'})\n`
+            + `预计消耗:${money(est)}(仅视觉识别;DSH 翻译走额度)\n`
+            + '流程:整本视觉识别 → DSH 翻译 → 设为参与嵌字 → 校对\n'
+            + '⚠ 整本识别耗时与花费都较高\n\n开始吗?',
+          okText: '开始',
+          onOk: async () => {
+            setConfirmDlg(null);
+            await runDshJob('/dsh-full', { folder }, 'DSH 汉化');
+          },
+        });
+      }
+
       // 单页识图翻译:当前页所有框交给视觉引擎读原文,再交 DSH 模型翻译
       async function visionPage() {
         if (!folder || !page || loading) return;
@@ -1905,10 +2043,56 @@ h('div', { style: S.row },
 
       // 确认嵌字:先跑一遍校对 → 弹窗确认 → 嵌字(脚本内自动做嵌字后校对)→ 结果
       async function confirmEmbed() {
-        if (!folder || loading) return;
+        // 默认:在面板内执行(校对 → 确认 → 嵌字 → 表单+预览)
+        return _confirmEmbedPanel();
+      }
+
+      // 交给当前 DSH 对话执行(写工作区请求;在对话里说「执行嵌字」)
+      async function embedToChat() {
+        try {
+          const est = await costEstimate('all', false);
+          setConfirmDlg({
+            title: '交给对话执行嵌字',
+            body: `整本:${(info && info.pageCount) || '?'} 页 / ${est ? est.boxes : '?'} 框\n`
+              + `预计消耗:${money(est)}(仅视觉识别;嵌字本身本地免费)\n`
+              + '提交后请在本对话里说「执行嵌字」。\n\n提交吗?',
+            okText: '提交',
+            onOk: async () => {
+              setConfirmDlg(null);
+              await submitEmbedToChat();
+            },
+          });
+        } catch (e) { setMsg('估算失败:' + String(e.message || e)); }
+      }
+
+      async function submitEmbedToChat() {
+        try {
+          if (dirtyRef.current) await savePage({ auto: true });
+          const r = await api('/embed-agent-request', { folder });
+          if (r && r.ok) {
+            setMsg('已写入嵌字请求:' + r.ws + '\n请在本对话里说「执行嵌字」');
+            setLog('嵌字请求 → ' + r.ws + '\\pending_embed_request.json');
+            return;
+          }
+          setMsg('提交失败:' + ((r && r.error) || '未知'));
+        } catch (e) {
+          setMsg('提交失败:' + String(e.message || e));
+        }
+      }
+
+      async function _confirmEmbedPanel() {
+        // 先给明确反馈,避免"点了没反应"
+        setMsg('确认嵌字:开始…');
+        setLog('确认嵌字:开始…');
+        console.log('[manga-workflow] confirmEmbed clicked');
+        if (!folder) { setMsg('确认嵌字:请先选择/打开一本漫画'); return; }
+        if (loading) { setMsg('确认嵌字:有任务正在运行,请等它结束再点'); return; }
         setLoading(true);
         try {
           if (dirtyRef.current) await savePage({ auto: true });
+          setMsg('嵌字前体检中(对齐/无效译文/艺术字)…');
+          let pf = {};
+          try { pf = await api('/preflight', { folder, page, autoParticipate: pfAuto }); } catch (e) { pf = {}; }
           setMsg('嵌字前校对中…');
           const r = await runJob('proofread');
           const log = (r && r.log) || '';
@@ -1919,7 +2103,9 @@ h('div', { style: S.row },
           setMsg(`嵌字前校对完成:问题 ${issues} 条 / 提示 ${warns} 条`);
           setConfirmDlg({
             title: '确认嵌字',
-            body: `嵌字前校对:问题 ${issues} 条 / 提示 ${warns} 条`
+            body: `嵌字前体检:对齐 ${pf.aligned || 0} 处 · 缺译文 ${pf.missing_total || 0} 框 · `
+              + `无效译文 ${pf.invalid_total || 0} 框 · 艺术字 ${pf.art_total || 0} 框(已自动排除)\n`
+              + `嵌字前校对:问题 ${issues} 条 / 提示 ${warns} 条`
               + (summaryLine ? '\n' + summaryLine : '')
               + '\n\n' + lines.slice(-10).join('\n')
               + '\n\n确认后开始嵌字(嵌字结束会自动再校对一遍输出)。',
@@ -1965,13 +2151,13 @@ h('div', { style: S.row },
             '— 日志末段 —',
             lines.slice(-10).join('\n'),
           ].join('\n');
+          setPreviewPg(page || '');
           setConfirmDlg({
             title: ok ? '嵌字完成 ✔ 请确认结果' : '嵌字失败',
             body: form,
             okText: '确认完成',
-            preview: (ok && page)
-              ? (API + '/preview?folder=' + encodeURIComponent(folder) + '&page=' + encodeURIComponent(page) + '&t=' + Date.now())
-              : '',
+            preview: ok ? 'yes' : '',
+            previewPages: ok ? ((info && info.pages) || []).map((x) => x.page) : [],
             onOk: () => setConfirmDlg(null),
           });
         } catch (e) {
@@ -2225,15 +2411,31 @@ h('div', { style: S.row },
               title: '当前页所有框:视觉引擎读原文 → DSH 模型翻译(兜底用)',
               onClick: () => visionPage(),
             }, '单页识图翻译'),
+            h('button', {
+              type: 'button', style: S.btn, disabled: loading,
+              title: '本页拟声词:视觉引擎识别 → DSH 翻译 → 自动参与嵌字',
+              onClick: () => dshSfx(),
+            }, '拟声词识别填词'),
+            h('button', {
+              type: 'button',
+              style: loading ? S.btn : S.btnOn,
+              disabled: loading,
+              title: '整本:视觉识别 + DSH 翻译 + 校对',
+              onClick: () => dshFull(),
+            }, 'DSH汉化模式'),
             h('button', { type: 'button', style: S.btn, disabled: loading, onClick: () => run('proofread') }, '校对'),
             h('button', { type: 'button', style: S.btn, disabled: loading, onClick: () => run('embed') }, '嵌字'),
             h('button', {
               type: 'button',
               style: loading ? S.btn : S.btnOn,
-              disabled: loading,
               title: '先自动校对 → 确认 → 嵌字(嵌字后自动校对输出)',
-              onClick: () => confirmEmbed(),
+              onClick: () => { try { confirmEmbed(); } catch (e) { setMsg('确认嵌字异常:' + String(e)); } },
             }, '确认嵌字'),
+            h('button', {
+              type: 'button', style: S.btn, disabled: loading,
+              title: '把请求写到工作区,在本对话里说「执行嵌字」后由 DSH 执行',
+              onClick: () => { try { embedToChat(); } catch (e) { setMsg('提交异常:' + String(e)); } },
+            }, '交给对话'),
           ),
         ) : null,
         msg ? h('div', { style: { ...S.muted, marginBottom: '6px' } }, msg) : null,
@@ -2257,6 +2459,41 @@ h('div', { style: S.row },
               ? h('span', { style: { ...S.muted, fontSize: '10px', marginLeft: '6px' } },
                   '已自动保存 ' + autoSavedAt)
               : null,
+          ),
+          h('div', { style: S.row },
+            h('button', {
+              type: 'button', style: S.btn, disabled: loading,
+              title: '把本页所有框设为参与嵌字',
+              onClick: () => {
+                setBoxes((prev) => prev.map((b) => ({ ...b, auto: false })));
+                markDirty();
+                setMsg('本页全部框已设为参与嵌字,点「保存」生效');
+              },
+            }, '本页auto→参与'),
+            h('button', {
+              type: 'button', style: S.btn, disabled: loading,
+              title: '只把有译文的 auto 框设为参与',
+              onClick: () => {
+                const tr = (pageData && pageData.trans) || [];
+                setBoxes((prev) => prev.map((b, i) => {
+                  const has = !!(tr[i] && String(tr[i]).trim());
+                  return has ? { ...b, auto: false } : b;
+                }));
+                markDirty();
+                setMsg('本页有译文的 auto 框已设为参与,点「保存」生效');
+              },
+            }, '仅补有译文的'),
+            h('button', {
+              type: 'button', style: S.btn, disabled: loading,
+              title: '全书所有「有译文」的 auto 框设为参与嵌字(可能较慢)',
+              onClick: () => autoParticipateAll(),
+            }, '全书auto参与'),
+            h('label', { style: { ...S.muted, fontSize: '11px', marginLeft: '4px' } },
+              h('input', {
+                type: 'checkbox', checked: pfAuto,
+                onChange: (e) => setPfAuto(e.target.checked),
+                title: '嵌字前体检时,把有译文的 auto 框自动设为参与',
+              }), ' 体检时auto参与'),
           ),
           h('div', { style: S.row },
             h('span', { style: { ...S.muted, fontSize: '11px' } }, '模式:'),
@@ -2365,21 +2602,28 @@ h('div', { style: S.row },
             },
           }) : null,
           h('div', { style: { ...S.muted, marginTop: '4px' } },
-            '操作:左键拖框/自由框选 · 单击框=选中(改设置实时写回) · 右键删框 · 双击改字 · '
+            '单击框 = 编辑属性(选中后改设置实时写回) · 双击框 = 编辑文字(原文/译文) · 左键拖框/自由框选 · 右键删框 · '
             + 'N=切类型 · E=切原文处理(直盖→抹除→覆盖) · V/H=竖/横 · A=自动 · Ctrl+Z 撤销 · Ctrl+S 保存 · ←/→ 翻页'),
         ) : null,
         log ? h('div', { style: S.log }, log) : null,
-        confirmDlg ? h('div', {
+        // 底部常驻提示(滚动到底也能看到当前进度/消息)
+        h('div', {
           style: {
-            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 999,
+            position: 'sticky', bottom: 0, marginTop: '6px',
+            background: 'rgba(32,33,36,0.95)', borderTop: '1px solid rgba(128,128,128,0.35)',
+            padding: '4px 8px', fontSize: '11px', color: '#ffd24d',
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', zIndex: 5,
           },
+          title: msg || '',
+        }, (loading ? '⏳ ' : '') + (msg || '就绪')),
+        confirmDlg ? h('div', {
+          style: { marginTop: '8px' },   // 在当前工作台界面内联显示,不弹窗
         },
           h('div', {
             style: {
-              background: '#25262b', color: '#eee', borderRadius: '8px',
-              padding: '14px 16px', width: '90%', maxWidth: '620px',
-              boxShadow: '0 8px 30px rgba(0,0,0,0.5)',
+              background: 'rgba(255,190,0,0.08)', color: 'inherit',
+              border: '1px solid rgba(255,190,0,0.5)', borderRadius: '8px',
+              padding: '12px 14px',
             },
           },
             h('div', { style: { fontWeight: 600, marginBottom: '8px' } }, confirmDlg.title || '确认'),
@@ -2391,12 +2635,32 @@ h('div', { style: S.row },
               },
             }, confirmDlg.body || ''),
             confirmDlg.preview
-              ? h('img', {
-                  src: confirmDlg.preview,
-                  style: { maxWidth: '100%', maxHeight: '360px', display: 'block',
-                           margin: '0 0 12px', border: '1px solid rgba(128,128,128,0.4)',
-                           borderRadius: '6px' },
-                })
+              ? (function renderPreview() {
+                  const pgs = confirmDlg.previewPages || [];
+                  const cur = previewPg || page || '';
+                  const i = pgs.indexOf(cur);
+                  const url = API + '/preview?folder=' + encodeURIComponent(folder)
+                    + '&page=' + encodeURIComponent(cur) + '&t=' + Date.now();
+                  return h('div', { style: { marginBottom: '10px' } },
+                    h('div', { style: { ...S.row, marginBottom: '4px' } },
+                      h('button', {
+                        type: 'button', style: S.btn,
+                        onClick: () => { if (i > 0) setPreviewPg(pgs[i - 1]); },
+                      }, '◀'),
+                      h('span', { style: { ...S.muted, fontSize: '11px', minWidth: '120px', textAlign: 'center' } },
+                        '预览 ' + (i >= 0 ? (i + 1) + '/' + pgs.length : '-') + ' · ' + cur),
+                      h('button', {
+                        type: 'button', style: S.btn,
+                        onClick: () => { if (i >= 0 && i < pgs.length - 1) setPreviewPg(pgs[i + 1]); },
+                      }, '▶'),
+                    ),
+                    h('img', {
+                      src: url,
+                      style: { maxWidth: '100%', maxHeight: '360px', display: 'block',
+                               border: '1px solid rgba(128,128,128,0.4)', borderRadius: '6px' },
+                    }),
+                  );
+                })()
               : null,
             h('div', { style: { display: 'flex', gap: '8px', justifyContent: 'flex-end' } },
               h('button', {

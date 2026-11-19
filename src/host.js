@@ -1323,6 +1323,159 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
       }
     }
 
+    // 确认嵌字 → 交给当前对话执行:POST {folder} 写工作区请求文件
+    if (name === 'embed-agent-request' && req.method === 'POST') {
+      const raw = await readBody(req)
+      let body = {}
+      try { body = JSON.parse(raw || '{}') } catch {}
+      const ws = String(readUiSettings().workspaceDir || '').trim()
+      if (!ws) return json(res, 400, { ok: false, error: '未设置嵌字工作区' })
+      try {
+        mkdirSync(ws, { recursive: true })
+        writeFileSync(path.join(ws, 'pending_embed_request.json'), JSON.stringify({
+          folder: body.folder || '', at: new Date().toISOString(), status: 'pending',
+        }, null, 2), 'utf8')
+        return json(res, 200, { ok: true, ws })
+      } catch (e) { return json(res, 500, { ok: false, error: String(e) }) }
+    }
+
+    // 预计消耗:POST {folder, page?, scope: 'sfx'|'all'} → 框数 + 预估费用
+    if (name === 'cost-estimate' && req.method === 'POST') {
+      const raw = await readBody(req)
+      let body = {}
+      try { body = JSON.parse(raw || '{}') } catch {}
+      const dir = body.folder || folder
+      if (!dir || !existsSync(dir)) return json(res, 400, { ok: false, error: '文件夹不存在' })
+      const reg = loadJson(path.join(dir, 'regions.json')) || {}
+      const tr = loadJson(path.join(dir, 'trans.json')) || {}
+      const scope = body.scope === 'all' ? 'all' : 'sfx'
+      const pages = body.page ? [body.page] : Object.keys(reg)
+      let boxes = 0, pagesHit = 0, todo = 0
+      for (const pg of pages) {
+        const bs = reg[pg] || []
+        const row = tr[pg] || []
+        let hit = 0
+        for (let i = 0; i < bs.length; i++) {
+          const b = bs[i]
+          const isSfx = b.kind === 'plain' || b.sfx
+          if (scope === 'sfx' && !isSfx) continue
+          boxes += 1
+          hit += 1
+          if (!(row[i] && String(row[i]).trim())) todo += 1
+        }
+        if (hit) pagesHit += 1
+      }
+      // 视觉识别约 0.01~0.09 元/框(随裁剪大小与模型);DSH 翻译不额外计费
+      const yuanMin = Math.round(boxes * 0.01 * 100) / 100
+      const yuanMax = Math.round(boxes * 0.09 * 100) / 100
+      return json(res, 200, { ok: true, scope, pages: pagesHit, boxes, todo,
+        yuanMin, yuanMax, note: '视觉识别按框计费;DSH 翻译走 DSH 额度,不额外计费' })
+    }
+
+    function markSfxParticipate(dir, page, onlySfx) {
+      const regF = path.join(dir, 'regions.json')
+      const trF = path.join(dir, 'trans.json')
+      const reg = loadJson(regF) || {}
+      const tr = loadJson(trF) || {}
+      let n = 0
+      for (const pg of (page ? [page] : Object.keys(reg))) {
+        const bs = reg[pg] || []
+        const row = tr[pg] || []
+        for (let i = 0; i < bs.length; i++) {
+          const isSfx = bs[i].kind === 'plain' || bs[i].sfx
+          const hasTr = row[i] && String(row[i]).trim()
+          if (hasTr && (!onlySfx || isSfx) && bs[i].auto) { bs[i].auto = false; n += 1 }
+        }
+      }
+      try { writeFileSync(regF, JSON.stringify(reg, null, 1), 'utf8') } catch (e) { /* ignore */ }
+      return n
+    }
+
+    // 拟声词识别填词:视觉引擎读本页/整本拟声词 + DSH 翻译 + 设为参与嵌字
+    if (name === 'dsh-sfx' && req.method === 'POST') {
+      const raw = await readBody(req)
+      let body = {}
+      try { body = JSON.parse(raw || '{}') } catch {}
+      const dir = body.folder || folder
+      if (!dir) return json(res, 400, { error: '缺少 folder' })
+      if (!llmReady()) return json(res, 400, { error: 'DSH 模型不可用' })
+      const id = 'y' + Date.now().toString(36)
+      const job = { id, step: 'dsh-sfx', folder: dir, status: 'running', code: null, log: '', started: Date.now() }
+      jobs.set(id, job)
+      ;(async () => {
+        const env = { ...runtimeEnv, MANGA_ENV_DIR: envDirCfg() }
+        const args = [scriptPath('ocr_fallback.py'), dir, '--mode', 'sfx', '--force',
+                      '--short-auto', '0']
+        if (body.page) args.push('--page', body.page)
+        if (config.lang) args.push('--lang', config.lang)
+        job.log += '[拟声词识别] 视觉引擎读取中…\n'
+        const r = await runProcess(pythonPath, args, env, (t) => { job.log += t })
+        job.log += '\n[拟声词识别] exit=' + r.code + '\n'
+        job.log += '[DSH 翻译] 翻译拟声词…\n'
+        const n = await dshTranslateFolder(dir, body.page || null, (t) => { job.log += t }, false)
+        job.log += '[DSH 翻译] ' + n + ' 条\n'
+        const m = markSfxParticipate(dir, body.page || null, true)
+        job.log += '[参与嵌字] 新增 ' + m + ' 个拟声词框\n'
+        job.code = 0
+        job.status = 'done'
+      })().catch((e) => { job.status = 'error'; job.code = 1; job.log += '\n[失败] ' + String((e && e.message) || e) })
+      return json(res, 200, { ok: true, jobId: id })
+    }
+
+    // DSH 汉化模式:整本视觉识别 + DSH 翻译 + 校对 + 设为参与
+    if (name === 'dsh-full' && req.method === 'POST') {
+      const raw = await readBody(req)
+      let body = {}
+      try { body = JSON.parse(raw || '{}') } catch {}
+      const dir = body.folder || folder
+      if (!dir) return json(res, 400, { error: '缺少 folder' })
+      if (!llmReady()) return json(res, 400, { error: 'DSH 模型不可用' })
+      const id = 'z' + Date.now().toString(36)
+      const job = { id, step: 'dsh-full', folder: dir, status: 'running', code: null, log: '', started: Date.now() }
+      jobs.set(id, job)
+      ;(async () => {
+        const env = { ...runtimeEnv, MANGA_ENV_DIR: envDirCfg() }
+        job.log += '[DSH 汉化] 1/4 视觉识别整本…\n'
+        const r1 = await runProcess(pythonPath,
+          [scriptPath('ocr_fallback.py'), dir, '--mode', 'all', '--force', '--short-auto', '0'], env,
+          (t) => { job.log += t })
+        job.log += '\n[DSH 汉化] 识别 exit=' + r1.code + '\n'
+        job.log += '[DSH 汉化] 2/4 DSH 翻译整本…\n'
+        const n = await dshTranslateFolder(dir, null, (t) => { job.log += t }, false)
+        job.log += '[DSH 汉化] 翻译 ' + n + ' 条\n'
+        job.log += '[DSH 汉化] 3/4 设为参与嵌字…\n'
+        const m = markSfxParticipate(dir, null, false)
+        job.log += '[DSH 汉化] 参与 +' + m + ' 框\n'
+        job.log += '[DSH 汉化] 4/4 校对…\n'
+        const r2 = await runProcess(pythonPath,
+          [scriptPath('proofread.py'), dir, '--stage', 'pre', '--mode', 'both'], env,
+          (t) => { job.log += t })
+        job.log += '\n[DSH 汉化] 校对 exit=' + r2.code + '\n'
+        job.code = 0
+        job.status = 'done'
+      })().catch((e) => { job.status = 'error'; job.code = 1; job.log += '\n[失败] ' + String((e && e.message) || e) })
+      return json(res, 200, { ok: true, jobId: id })
+    }
+
+    // 嵌字前置体检:POST {folder, page?} → 对齐数组、清无效译文、标记艺术字
+    if (name === 'preflight' && req.method === 'POST') {
+      const raw = await readBody(req)
+      let body = {}
+      try { body = JSON.parse(raw || '{}') } catch {}
+      const dir = body.folder || folder
+      if (!dir || !existsSync(dir)) return json(res, 400, { ok: false, error: '文件夹不存在' })
+      const args2 = [scriptPath('preflight.py'), dir]
+      if (body.page) args2.push('--page', body.page)
+      if (body.autoParticipate) args2.push('--auto-participate')
+      const env2 = { ...runtimeEnv, MANGA_ENV_DIR: envDirCfg() }
+      const rr = await runProcess(pythonPath, args2, env2)
+      let out2 = {}
+      for (const ln of String(rr.out || '').split('\n')) {
+        if (ln.trim().startsWith('{')) { try { out2 = JSON.parse(ln) } catch (e) {} }
+      }
+      return json(res, 200, { ok: rr.code === 0, ...out2, err: (rr.err || '').slice(-400) })
+    }
+
     // 版本检测:GET ?force=1 → {current, latest, url, checkedAt, cached}
     if (name === 'version-check') {
       const cacheFile = path.join(os.homedir(), '.manga-workflow', 'version.json')

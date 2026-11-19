@@ -78,6 +78,10 @@ def check_original(src, regions):
         for i in range(min(n, len(texts))):
             t = texts[i]
             if _looks_garbled(t):
+                # 本来就没有日文/中文的原文(纯符号、拟声标注、英文标题)不算识别失败
+                import re as _re
+                if not _re.search(r'[\u3040-\u30ff\u4e00-\u9fff]', str(t or '')):
+                    continue
                 warns.append(f"{p}[{i}]: 原文可疑(可能识别失败): {str(t)[:20]!r}")
     return issues, warns
 
@@ -112,10 +116,13 @@ def check_translation(src, regions):
             zh = str(t[i])
             # 译文疑似与原文相同(没翻译)
             if i < len(texts) and zh.strip() == str(texts[i]).strip():
-                warns.append(f"{p}[{i}]: 译文与原文完全相同(可能没翻译)")
-            # 超长
+                # 原文本身是符号/拟声(无日文假名或汉字)→ 保留原文是合法的,不告警
+                if re.search(r'[\u3040-\u30ff\u4e00-\u9fff]', str(texts[i])):
+                    warns.append(f"{p}[{i}]: 译文与原文完全相同(可能没翻译)")
+            # 超长(拟声词允许少量溢出,不再告警)
             cap = _capacity(b)
-            if len(zh) > cap * 1.5:
+            _is_plain = (b.get('kind') == 'plain') or bool(b.get('sfx')) or bool(b.get('nobox'))
+            if (not _is_plain) and len(zh) > cap * 1.5:
                 warns.append(f"{p}[{i}]: 译文 {len(zh)} 字,框估计只能放 {cap} 字,可能溢出")
             # 框异常小
             if int(b.get('w', 0)) < 6 or int(b.get('h', 0)) < 6:
@@ -144,6 +151,11 @@ def check_translation(src, regions):
             from collections import Counter as _C
             for val, cnt in _C(zh_list_page).items():
                 if cnt >= 3 and len(val) <= 6:
+                    # 重复的拟声词:若这些框原文也相同,属于正常(如 4 个「扑通」)
+                    _idxs = [k for k, x in enumerate(t) if str(x).strip() == val]
+                    _origs = [str(texts[k]).strip() for k in _idxs if k < len(texts)]
+                    if len(set(_origs)) <= 1:
+                        continue
                     warns.append(f"{p}: 有 {cnt} 个框译文相同 {val!r},疑似翻译失败")
     for p in pages:
         if _page_ext(src, p) is None:
@@ -282,7 +294,28 @@ def main():
     summary = {"stage": stage, "mode": mode, "ok": len(issues) == 0,
                "issues": len(issues), "warns": len(warns)}
     try:
-        _struct = structural_checks(src, _load(os.path.join(src, 'regions.json')), _load(os.path.join(src, 'ocr_text.json')))
+        # 结构化报告:缺译文/结构问题,供 DSH 接管
+        _reg = _load(os.path.join(src, 'regions.json'))
+        _tr = _load(os.path.join(src, 'trans.json'))
+        _missing = {}
+        for _pg, _bs in _reg.items():
+            _row = _tr.get(_pg) or []
+            _idx = [i for i in range(len(_bs))
+                    if not (i < len(_row) and str(_row[i]).strip())]
+            if _idx:
+                _missing[_pg] = _idx
+        _rep = {'stage': 'pre', 'folder': src,
+                'missing_translations': _missing,
+                'missing_total': sum(len(v) for v in _missing.values())}
+        try:
+            with open(os.path.join(src, 'proofread_report.json'), 'w', encoding='utf-8') as _f:
+                json.dump(_rep, _f, ensure_ascii=False, indent=1)
+        except Exception:
+            pass
+        if _missing:
+            print('  [报告] 有框缺译文: %d 页 / %d 框(见 proofread_report.json)'
+                  % (len(_missing), _rep['missing_total']), flush=True)
+        _struct = structural_checks(src, _reg, _load(os.path.join(src, 'ocr_text.json')))
         if _struct:
             print('  [提示] 结构性疑点 %d 条:' % len(_struct), flush=True)
             for _m in _struct[:40]:

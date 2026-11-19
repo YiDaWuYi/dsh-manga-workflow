@@ -167,7 +167,8 @@ def fit_size(draw, text, w, h, start, st, vertical, grow=False):
     """
     text = text or ''
     start = max(6, int(start or 20))
-    lo_s, hi_s = 6, min(140, max(12, int(min(w, h) * 0.9)))
+    lo_s = 9 if grow else 6   # 拟声词不低于 9 号,避免小到看不清
+    hi_s = min(140, max(12, int(min(w, h) * 0.9)))
     def fits(s):
         return _fits_vertical(text, w, h, s) if vertical else _fits_horizontal(draw, text, w, h, s, st)
     if grow:
@@ -198,9 +199,11 @@ def draw_vtext(draw, text, x, y, w, h, size, st):
     cols = []
     col_w = s + 4
     fits = False
-    while s > 8:
-        per_col = max(1, int((h - 6) // (s + 3)))
-        col_w = s + 4
+    while s > 6:
+        # 字号较小时收紧行距/字距,尽量塞进窄框(减少"放不下")
+        gap = 1 if s <= 14 else 3
+        per_col = max(1, int((h - 6) // (s + gap)))
+        col_w = s + gap + 1
         max_cols = max(1, int((w + 2) // col_w))
         cols = []
         for c in chunks:
@@ -473,7 +476,15 @@ def main():
                 size = new_size
                 if bad:
                     overflow.append((i, zh))
-                if vertical:
+                if bad and grow:
+                    # 拟声词:允许少量溢出(约 18% 宽 / 6% 高),而不是缩成小字
+                    ew, eh = int(w * 1.18), int(h * 1.06)
+                    ex = max(0, x - (ew - w) // 2)
+                    ey = max(0, y - (eh - h) // 2)
+                    size = max(size, 9)
+                    ok = (draw_vtext(draw, zh, ex, ey, ew, eh, size, st) if vertical
+                          else draw_htext(draw, zh, ex, ey, ew, eh, size, st))
+                elif vertical:
                     ok = draw_vtext(draw, zh, x, y, w, h, size, st)
                 else:
                     ok = draw_htext(draw, zh, x, y, w, h, size, st)
