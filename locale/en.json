@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Manga translation workflow",
-    "description": "Local OCR for marked manga text, GPU de-text and Chinese embedding. Adds manga_ocr, manga_embed and manga_status tools.",
+    "description": "Local OCR for marked manga text, GPU de-text and Chinese embedding. Adds a sidebar workbench (start page, native folder picker, async workflow buttons, web box marker, settings and help pages) plus an auto-detection benchmark. Settings cover the vision model/API used for image reading and toggles for the sidebar entry, readiness banner and path memory. Provides the manga_ocr, manga_embed, manga_status and manga_bench tools.",
     "detail": "docs/DETAIL.md"
   }
 }

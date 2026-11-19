@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "漫画汉化工作流",
-    "description": "对已标框的漫画做本地 OCR、GPU 去字和中文嵌字。提供 manga_ocr、manga_embed、manga_status 三个工具。",
+    "description": "对已标框的漫画做本地 OCR、GPU 去字和中文嵌字;左侧边栏提供「漫画工作台」(启动页/浏览器选目录/异步流程按钮/网页标框/设置页/帮助页),并附带自动标框基准测试。设置页可配置识图用的视觉模型与 API,以及侧边栏、启动提示、记忆路径等开关。提供 manga_ocr、manga_embed、manga_status、manga_bench 四个工具。",
     "detail": "docs/DETAIL.md"
   }
 }

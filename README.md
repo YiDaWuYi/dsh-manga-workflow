@@ -1,6 +1,9 @@
 # dsh-manga-workflow
 
-DeepSeek Harness 的漫画汉化工作流插件:本地 OCR(日/韩)、GPU 去字(LaMa)、中文嵌字。
+> 版本更新记录见 [CHANGELOG.md](./CHANGELOG.md);发版规则见 [RELEASING.md](./RELEASING.md)。
+
+
+DeepSeek Harness 的漫画汉化工作流插件:本地 OCR(日/韩/英)、GPU 去字(LaMa)、中文嵌字,外加**启动提示栏**和**自动标框基准测试**。
 
 ## 提供的工具
 
@@ -9,13 +12,164 @@ DeepSeek Harness 的漫画汉化工作流插件:本地 OCR(日/韩)、GPU 去字
 | `manga_ocr` | 对已标框的漫画文件夹跑本地 OCR,生成 `ocr_text.json` |
 | `manga_embed` | 按 `trans.json` 擦原文 + 写中文,可选 GPU LaMa 去字或预览 |
 | `manga_status` | 汇总页数、框数、翻译进度 |
+| `manga_bench` | 把已有 `regions.json` 当标准答案,测自动标框的召回/精确/噪声率 |
+
+## 侧边栏:漫画工作台
+
+插件启用后,左侧边栏多出 **🎨 漫画工作台** 入口,点开是一个工作台面板:
+
+| 启动页 | 标题、路径输入、「浏览…」系统对话框、引擎检测、视觉引擎状态、页脚声明 |
+| 文件夹输入 | 粘贴路径 / 点「浏览…」选目录 / 记住上次路径 |
+| 状态 | 页数、框数、已翻译数 |
+| 流程按钮 | OCR / 翻译 / 校对 / 嵌字(**异步任务,日志实时滚动**) |
+| 页码导航 | ◀ / ▶ 翻页 + 保存(Ctrl+S) |
+| 网页标框 | 框选/涂抹、竖排横排、字号、拟声词、抹除原文、黑字白字、外框、撤销、右键删框、双击改字 |
+| 设置 / 帮助 | 顶部「设置」「帮助」,也可从启动页进入 |
+| 日志 | 脚本运行输出(轮询任务进度) |
+
+> 网页版仍缺:自动标框、一键识别、重标同步、画面缩放。这些用桌面版 `mark.bat`;
+> 启动页也能一键「启动桌面版」并自动带上当前文件夹。
+
+**长任务**:网页端是后端异步任务 + 前端轮询日志;桌面端是后台线程 + 状态栏流式进度,
+并可用顶栏「取消当前任务」杀进程树(网页端暂不能中断)。
+
+## 界面选项(双端设置页)
+
+| 选项 | 作用范围 | 存储位置 |
+|---|---|---|
+| **DSH 侧边栏** | **双端共享**:任意一端关掉,另一端也不会显示「漫画工作台」入口 | `~/.manga-workflow/settings.json` 的 `sidebarEnabled` |
+| **启动提示弹窗** | **双端共享**(只影响网页端显示):输入框上方那条「漫画汉化工作流已就绪」高亮提示 | 同文件的 `bannerEnabled`(默认 **开**) |
+| **记忆上次路径(网页端)** | 仅网页端 | 同文件的 `rememberPathWeb` |
+| **记忆上次路径(桌面端)** | 仅桌面端 | 同文件的 `rememberPathDesktop` |
+
+- 两端改的是**同一个** `~/.manga-workflow/settings.json`,各自只写自己的键,互不覆盖;
+- 网页端切换侧边栏**立即生效**(动态注册/注销 slot);桌面端写入后,网页端**刷新一次**才生效;
+- 关闭记忆路径时,已记住的路径会被忽略(网页端还会清除 localStorage 里的缓存)。
+
+## OCR 兜底(视觉引擎)
+
+本地 OCR 识别不可靠时,**自动把框内图裁下来交给视觉引擎重读**,写回 `ocr_text.json`
+(原文件先备份成 `ocr_text.json.bak`)。
+
+| 阈值档位 | 触发条件 | 典型候选数(实测 210 框的本子) |
+|---|---|---|
+| **关闭** | 不兜底 | 0 |
+| **仅空框**(默认) | OCR 结果完全为空 | 0(安全网) |
+| **空框 + 极短** | 有效字数 < 阈值(标点/省略号不计) | 阈值 1 → 7 框;阈值 2 → 15 框 |
+| **全部重读** | 每个有字的框 | 210 框(受上限约束) |
+
+- **每本上限**(默认 30 框)控制花费:每框约 **¥0.01~0.09**(取决于裁剪图大小与模型);
+- 只在对该本子跑 OCR 时触发一次;兜底失败**不影响**已成功的本地 OCR 结果;
+- 配置存 `manga_tool/_ocr_cfg.json`,网页端与桌面端**改的是同一个文件**;
+- 命令行:`python manga_tool/ocr_fallback.py <本子> --dry-run --mode short` 可先看候选。
+
+## 成本预估(设置页)
+
+设置页底部有「**成本预估**」,分两块:
+
+| 项目 | 口径 | 说明 |
+|---|---|---|
+| **识图**(外接视觉引擎) | 按 token 计费 | 读取本子首页/中间/末页的尺寸,按 28px patch 估输入 token;输出按 400 token 估;单价自己填(元/百万 tokens) |
+| **嵌字**(本地) | **¥0** | 本地 GPU / OpenCV,不产生 API 费用;参考耗时约 **0.4 秒/页** |
+
+- 显示:每页成本、整本 N 页合计;
+- 单价留空按 0 计(¥0);网页端单价存在浏览器 localStorage,桌面端存在 `manga_tool/_cost_cfg.json`;
+- token 只是**估算**,实际以各厂商计费口径为准;不做识图就不产生费用。
+
+## 帮助页
+
+启动页 / 工作台顶部的「帮助」按钮打开内置使用说明,包含:
+
+1. 基本流程
+2. 鼠标与快捷键
+3. **网页版与桌面版的区别**(18 项对照表)
+4. **设置页说明**(视觉模型 / API、测试连接 vs 测试识图、界面选项)
+5. 视觉引擎(识图)与免费模型
+6. 常见问题(异步任务、翻译慢、保存覆盖、弹窗/侧边栏怎么关…)
+
+桌面版对应 `manga_tool/HELP.md`(程序里点「帮助」查看)。
+
+## 视觉引擎(识图)
+
+> **让 AI「看图 / 读图」必须先配好视觉引擎。** 本地 OCR 不需要它,但检查嵌字效果、
+> 读图上的文字、核对气泡位置完全依赖它。
+
+启动页会显示当前视觉引擎状态(✅ 已配置 / ⚠️ 未配置)并提供「去设置」入口;
+工作台顶部、网页帮助页与桌面版 `HELP.md` 都写明了用法与免费方案。
+
+### 免费 / 低门槛的视觉模型
+
+| 模型 | API Base | 模型名 | 说明 |
+|---|---|---|---|
+| 智谱 GLM-4V-Flash | `https://open.bigmodel.cn/api/paas/v4` | `glm-4v-flash` | 官方免费 |
+| 硅基流动 Qwen2.5-VL | `https://api.siliconflow.cn/v1` | `Qwen/Qwen2.5-VL-7B-Instruct` | 有免费模型,以站内为准 |
+| Google Gemini 2.0 Flash | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-2.0-flash` | AI Studio 免费额度 |
+| OpenRouter | `https://openrouter.ai/api/v1` | 选带 `:free` 的视觉模型 | 免费模型随时变 |
+
+免费额度与可用性随时可能调整,以各厂商官网为准。
+
+### 使用提示
+
+1. 换厂商要**连 API Key 一起换**,只改 API Base 会鉴权失败。
+2. 模型必须**有视觉能力**,填纯文本模型(如 `deepseek-chat`)会报错。
+3. 保存后先点「测试连接」,再在对话里让 AI 读一张图验证。
+4. 免费模型通常有速率限制,整本批量识图建议付费或分批。
+5. 保存后若对话里的识图工具仍用旧配置,**重开一次对话**最稳。
+
+## 设置(视觉模型 / API)
+
+网页端启动页与工作台顶部、桌面版主页与编辑器顶栏都有「设置」按钮。
+
+**控制的是 DSH 识图用的视觉模型(modlens)**,写入 `~/.modlens/config.json` 的 `providers.openai`,
+所以改完就等于替换掉当前在用的那一家 API(比如换成别家、或把月之暗面换掉)。
+
+- **字段**:模型名、API Base、API Key(OpenAI 兼容协议)
+- **快速预设**:月之暗面 / 通义千问VL / 智谱 GLM-4V / OpenAI,点一下自动填 Base + 常用模型名
+- **存储**:两端共用 `~/.modlens/config.json`,桌面版与网页版改的是同一个文件
+- **测试连接**:向 `{API Base}/chat/completions` 发一次最小文本请求(`max_tokens: 8`),只看 API 通不通
+- **测试识图**:真发一张**程序生成的绿色三角形图**,让模型回答形状+颜色 —— 只有它答对才算「会看图」;
+  纯文本模型即使 API 通,这一步也会判为「没看懂图」
+- **API Key**:保存后只显示打码形式(`sk-i****D7gM`);留空表示不修改,「清空 Key」才会删除
+- **保留字段**:写回时会保留 modlens 原有的 `structuredOutput`、`extraBody` 以及其它 provider
+
+示例 `~/.modlens/config.json`:
+
+```json
+{
+  "providers": {
+    "openai": {
+      "baseUrl": "https://api.moonshot.cn/v1",
+      "apiKey": "sk-...",
+      "model": "kimi-k3",
+      "structuredOutput": true,
+      "extraBody": { "thinking": { "type": "disabled" } }
+    }
+  }
+}
+```
+
+## 启动提示栏
+
+插件就绪后,输入框下方会出现一条中文提示:
+
+```
+漫画汉化工作流已就绪
+```
+
+- **黄色高亮闪一下**(约 0.55 秒);
+- 停留几秒后**淡出消失**;
+- **不常驻**,不会一直占着界面。
+
+> 提示栏只在页面加载/插件重载时出现一次,想看效果可刷新页面或重启 DSH 客户端。
+>
+> 位置在**输入框下方的状态栏右侧**。不想要它:**设置 → 界面选项 → 启动提示弹窗**,默认开启。
 
 ## 安装
 
 ### 方式一:从 GitHub Release tarball(推荐)
 
 ```sh
-dsh plugin --profile <你的profile> add https://github.com/YiDaWuYi/dsh-manga-workflow/releases/download/v1.0.0/dsh-manga-workflow-1.0.0.tgz
+dsh plugin --profile <你的profile> add https://github.com/YiDaWuYi/dsh-manga-workflow/releases/download/v1.5.0/dsh-manga-workflow-1.5.0.tgz
 ```
 
 或在 DSH 的 **插件 → 添加插件** 里填这个 tarball 地址。
@@ -28,31 +182,50 @@ dsh plugin --profile <你的profile> add <本仓库目录>
 
 ## 配置
 
-在 profile 的 `cordis.patch.yml` 里可改:
-
-```yaml
-- id: manga-workflow
-  name: dsh-manga-workflow
-  config:
-    scriptsDir: 'E:/manga_tool'
-    pythonPath: 'E:/_venv/Scripts/python.exe'
-```
+在 `cordis.patch.yml` 的 `config` 中可改:
 
 | 键 | 说明 | 默认 |
 |---|---|---|
 | `scriptsDir` | 工作流 Python 脚本目录 | `E:/manga_tool` |
 | `pythonPath` | 运行脚本的 Python | `E:/_venv/Scripts/python.exe` |
 
-## 依赖
+## 测试方法
 
-- 工作区里的 `manga_tool` 脚本(mark_tool.py / ocr_regions.py / embed_regions.py);
-- `_venv`(torch CUDA、manga-ocr、easyocr、iopaint),用于本地 OCR 与 GPU 去字。
+### 让 DSH 的 Agent 跑(推荐)
+
+```
+用 manga_bench 测一下 <本子目录>
+```
+
+或者指定不过滤模式:
+
+```
+用 manga_bench 测一下 <本子目录>,all 设为 true
+```
+
+### 自己跑脚本
+
+```sh
+python scripts/bench.py <本子目录>          # 只标气泡
+python scripts/bench.py <本子目录> --all    # 不过滤
+python scripts/measure_detect.py <本子目录> <自动regions.json>
+python scripts/measure_precision.py <本子目录> <自动regions.json>
+```
+
+前提:本子必须已经人工标好 `regions.json`(作为标准答案),自动标框需要 GPU 与 EasyOCR 模型缓存。
+
+## 前提
+
+- 漫画文件夹里已有 `regions.json`(用工作区的 `mark.bat` 标框得到);
+- 本地 OCR / GPU 去字需要 `_venv`(torch、manga-ocr、easyocr、iopaint)已存在于工作区;
+- 缺失时工作区标框工具的启动页会提示,并可复制修复关键词交给 AI 安装。
 
 ## 限制
 
-- 长段落和花体拟声词的本地 OCR 可能读错或瞎编,需要人工或 AI 补读;
-- GPU LaMa 对密集网点背景会有轻微柔化。
+- 长段落和花体拟声词的本地 OCR 可能读错或瞎编,需要人工或用 AI 补读;
+- GPU LaMa 对密集网点背景会有轻微柔化;
+- 自动标框对"不在气泡里的排版文字"和"很小的字"仍会漏检。
 
-## License
+## 许可
 
 MIT

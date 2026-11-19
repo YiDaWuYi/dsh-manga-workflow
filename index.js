@@ -11,10 +11,14 @@
  */
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import { createMangaDesk } from './src/host.js'
+
+const PLUGIN_DIR = path.dirname(fileURLToPath(import.meta.url))
 
 export const name = 'manga-workflow'
-export const inject = ['tools']
+export const inject = ['tools', 'webServer', 'connection']
 
 const DEFAULT_SCRIPTS = 'E:/manga_tool'
 const DEFAULT_PYTHON = 'E:/_venv/Scripts/python.exe'
@@ -73,6 +77,38 @@ export function apply(ctx, config = {}) {
   }
   const scriptPath = (file) => path.join(scriptsDir, file)
 
+  // 侧边栏工作台的 HTTP 接口
+  try {
+    const desk = createMangaDesk({ pythonPath, scriptsDir, toolScriptsDir: path.join(PLUGIN_DIR, 'scripts'), runtimeEnv, config, getDirectoryPicker: () => ctx.get('directoryPicker') })
+    ctx.effect(() => ctx.webServer.register({
+      kind: 'prefix',
+      path: '/manga-desk',
+      handler: async (req, res) => {
+        const url = new URL(req.url, 'http://localhost')
+        try {
+          const conn = ctx.get('connection')
+          if (typeof conn?.requestRejection === 'function') {
+            const rejection = conn.requestRejection({ headers: req.headers })
+            if (rejection) {
+              res.statusCode = rejection
+              res.setHeader('content-type', 'application/json; charset=utf-8')
+              res.end(JSON.stringify({ error: '未授权' }))
+              return
+            }
+          }
+          await desk.handle(req, res, url)
+        } catch (e) {
+          if (res.headersSent) { res.end(); return }
+          res.statusCode = 500
+          res.setHeader('content-type', 'application/json; charset=utf-8')
+          res.end(JSON.stringify({ error: String(e && e.message || e) }))
+        }
+      },
+    }), 'dsh-manga-workflow: /manga-desk routes')
+  } catch (e) {
+    // 没有 webServer 时(非 Web profile)跳过,工具仍可用
+  }
+
   ctx.tools.register({
     name: 'manga_ocr',
     description: 'Run local Japanese/Korean OCR over every marked box in a manga folder (regions.json) and write ocr_text.json next to it.',
@@ -84,8 +120,8 @@ export function apply(ctx, config = {}) {
       },
       lang: {
         type: 'string',
-        enum: ['ja', 'ko'],
-        description: 'Source language: ja (Manga OCR) or ko (EasyOCR). Defaults to ja.',
+        enum: ['ja', 'ko', 'en'],
+        description: 'Source language: ja (Manga OCR), ko (EasyOCR) or en (EasyOCR). Defaults to ja.',
       },
     },
     output: TEXT_OUTPUT,
@@ -172,4 +208,30 @@ export function apply(ctx, config = {}) {
       return { text: lines.join('\n') }
     },
   })
+
+  ctx.tools.register({
+    name: 'manga_bench',
+    description: 'Benchmark automatic box detection against an existing manual regions.json (treated as ground truth). Reports recall, precision and noise rate. Requires GPU.',
+    parameters: {
+      folder: {
+        type: 'string',
+        required: true,
+        description: 'Absolute path to an already-annotated manga folder (must contain regions.json).',
+      },
+      all: {
+        type: 'boolean',
+        description: 'Detect all text instead of bubble text only. Defaults to bubble-only mode.',
+      },
+    },
+    output: TEXT_OUTPUT,
+    async execute(args) {
+      const target = path.join(PLUGIN_DIR, 'scripts', 'bench.py')
+      if (!existsSync(target)) return { text: `找不到基准脚本: ${target}` }
+      const cliArgs = [target, args.folder, '--tools', scriptsDir]
+      if (args.all) cliArgs.push('--all')
+      const r = await runProcess(pythonPath, cliArgs, runtimeEnv)
+      return { text: [`exit=${r.code}`, tail(r.out, 4000), tail(r.err, 1500)].filter(Boolean).join('\n') }
+    },
+  })
 }
+

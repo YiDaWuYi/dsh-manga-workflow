@@ -1,7 +1,7 @@
 {
   "name": "dsh-manga-workflow",
-  "version": "1.0.0",
-  "description": "Manga translation workflow for DeepSeek Harness: local Japanese/Korean OCR, GPU de-text and Chinese embedding tools.",
+  "version": "1.5.0",
+  "description": "Manga translation workflow for DeepSeek Harness: local Japanese/Korean/English OCR, GPU de-text and Chinese embedding tools, a sidebar workbench with a web box marker, an auto-detection benchmark, and a transient readiness banner.",
   "type": "module",
   "license": "MIT",
   "private": false,
@@ -24,16 +24,31 @@
   "homepage": "https://github.com/YiDaWuYi/dsh-manga-workflow",
   "exports": {
     ".": "./index.js",
+    "./client": "./client.js",
     "./locale/*.json": "./locale/*.json"
   },
   "files": [
     "index.js",
+    "client.js",
+    "src",
     "cordis.patch.yml",
+    "scripts",
     "locale/*.json",
     "docs",
-    "icon.svg"
+    "icon.svg",
+    "CHANGELOG.md",
+    "RELEASING.md"
   ],
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" }
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
   }
 }
