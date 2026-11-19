@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-manga-workflow',
   factory(require) {
   // 版本号(发布时同步 package.json / 桌面端 mark_tool.py)
-  const APP_VERSION = 'V1.12.2';
+  const APP_VERSION = 'V1.12.3';
 
     const React = require('react');
     const h = React.createElement;
@@ -2025,7 +2025,8 @@ h('div', { style: S.row },
         setLoading(true);
         try {
           if (dirtyRef.current) await savePage({ auto: true });
-          setLog('单页识图翻译中…');
+          setLog('单页识图翻译:0% · 视觉识别');
+          setMsg('单页识图翻译:0% · 视觉识别');
           const { jobId } = await api('/vision-page', { folder, page });
           let lastLog = '';
           for (;;) {
@@ -2096,10 +2097,12 @@ h('div', { style: S.row },
         setLoading(true);
         try {
           if (dirtyRef.current) await savePage({ auto: true });
-          setMsg('嵌字前体检中(对齐/无效译文/艺术字)…');
+          setMsg('确认嵌字:0% · 嵌字前体检');
+          setLog('确认嵌字:0% · 嵌字前体检(对齐/无效译文/艺术字)');
           let pf = {};
           try { pf = await api('/preflight', { folder, page, autoParticipate: pfAuto }); } catch (e) { pf = {}; }
-          setMsg('嵌字前校对中…');
+          setMsg('确认嵌字:10% · 嵌字前校对');
+          setLog('[进度] 10% · 嵌字前体检完成,开始校对');
           const r = await runJob('proofread');
           const log = (r && r.log) || '';
           const lines = log.split('\n').filter((l) => l.trim());
@@ -2144,7 +2147,8 @@ h('div', { style: S.row },
           const ok = r && r.code === 0;
           const log = (r && r.log) || '';
           const lines = log.split('\n').filter((l) => l.trim());
-          setMsg(ok ? '嵌字完成(已自动校对输出)' : '嵌字完成但有错误,请看日志');
+          setMsg(ok ? '确认嵌字:100% · 完成(已自动校对输出)' : '确认嵌字:失败,请看日志');
+          setLog('[进度] 100% · 嵌字结束');
           // 嵌字完成:提交结果表单 + 预览给用户
           const repLine = lines.filter((l) => l.includes('[报告]') || l.includes('[工作区]')).join('\n');
           const form = [
@@ -2158,6 +2162,8 @@ h('div', { style: S.row },
             lines.slice(-10).join('\n'),
           ].join('\n');
           setPreviewPg(page || '');
+          setMsg('确认嵌字:30% · 嵌字中');
+          setLog('[进度] 30% · 校对完成,开始嵌字');
           setConfirmDlg({
             title: ok ? '嵌字完成 ✔ 请确认结果' : '嵌字失败',
             body: form,
