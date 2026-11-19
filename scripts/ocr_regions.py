@@ -9,6 +9,24 @@ import numpy as np
 from PIL import Image
 
 
+def is_blank_crop(crop, std_thr=2.0, ink_thr=0.003):
+    """判断裁剪是否“空白”(几乎没有墨迹)。
+
+    manga-ocr 对纯白/纯色输入会输出语言先验的固定短语(实测:
+    纯白 -> 'そういえば、',纯黑 -> 'それでも、'),必须提前拦掉,
+    否则空白框会被写上假文字,进而被翻译、被嵌进画面。
+    """
+    try:
+        g = np.asarray(crop.convert('L'), dtype=np.int16)
+    except Exception:
+        return False
+    if g.size == 0:
+        return True
+    if float(g.std()) >= std_thr:
+        return False
+    return float((g < 128).mean()) < ink_thr
+
+
 def main():
     src = sys.argv[1] if len(sys.argv) > 1 else "."
     if '--lang' in sys.argv:
@@ -62,18 +80,25 @@ def main():
         if img is None:
             continue
         lst = []
+        blanks = 0
         for b in regions[page]:
             m = 6
             crop = img.crop((max(0, b['x'] - m), max(0, b['y'] - m),
                              min(img.width, b['x'] + b['w'] + m),
                              min(img.height, b['y'] + b['h'] + m)))
+            # 空白裁剪直接记空:避免模型把语言先验的固定短语写进空框
+            if is_blank_crop(crop):
+                lst.append('')
+                blanks += 1
+                continue
             try:
                 lst.append(rec(crop))
             except Exception:
                 lst.append('')
         result[page] = lst
         total_boxes += len(lst)
-        print(f'进度 {pi}/{len(pages)}  第{page}页  识别{len(lst)}框', flush=True)
+        print(f'进度 {pi}/{len(pages)}  第{page}页  识别{len(lst)}框'
+              + (f'(跳过空白 {blanks})' if blanks else ''), flush=True)
 
     out = os.path.join(src, 'ocr_text.json')
     json.dump(result, open(out, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)

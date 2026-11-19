@@ -637,7 +637,9 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
           const fbArgs = [fb, folder, '--mode', oc.mode,
             '--min-chars', String(oc.minChars), '--max', String(oc.maxPerBook)]
           if (config.lang) fbArgs.push('--lang', config.lang)
-          if (onData) onData(`\n--- OCR 兜底(mode=${oc.mode}, 上限 ${oc.maxPerBook} 框) ---\n`)
+          const hdr = `\n--- OCR 兜底(mode=${oc.mode}, 上限 ${oc.maxPerBook} 框) ---\n`
+          if (onData) onData(hdr)
+          out += hdr
           const r2 = await runProcess(pythonPath, fbArgs, env, onData)
           out += '\n' + r2.out
           err += r2.err

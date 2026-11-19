@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-manga-workflow',
   factory(require) {
   // 版本号(发布时同步 package.json / 桌面端 mark_tool.py)
-  const APP_VERSION = 'V1.8.1';
+  const APP_VERSION = 'V1.8.2';
 
     const React = require('react');
     const h = React.createElement;

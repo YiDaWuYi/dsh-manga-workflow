@@ -82,6 +82,21 @@ def core_len(text):
     return len([ch for ch in (text or '') if ch not in PUNCT and not ch.isspace()])
 
 
+def _is_blank(png_bytes, std_thr=2.0, ink_thr=0.003):
+    """裁剪是否空白(视觉引擎看了也是空的,不必花钱)。"""
+    try:
+        from PIL import Image as _I
+        g = _I.open(io.BytesIO(png_bytes)).convert('L')
+        arr = __import__('numpy').asarray(g, dtype='int16')
+    except Exception:
+        return False
+    if arr.size == 0:
+        return True
+    if float(arr.std()) >= std_thr:
+        return False
+    return float((arr < 128).mean()) < ink_thr
+
+
 def looks_bad(text, min_chars):
     """判断 OCR 结果是否可疑(基于真实数据校准,避免把合法的短句当失败)。"""
     t = (text or '').strip()
@@ -268,6 +283,10 @@ def main():
         if png is None:
             failed += 1
             print('进度 %d/%d %s#%d 跳过(框无效)' % (n, len(cands), c['page'], c['idx']))
+            continue
+        if _is_blank(png):
+            unchanged += 1
+            print('进度 %d/%d %s#%d 空白,跳过(不调用视觉引擎)' % (n, len(cands), c['page'], c['idx']))
             continue
         text, usage, err = call_vision(vcfg, png, lang)
         tin += int(usage.get('prompt_tokens') or usage.get('input_tokens') or 0)
