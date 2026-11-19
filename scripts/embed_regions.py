@@ -18,7 +18,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import cv2
 import math
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 def load_font(size, bold=False, art=False, family=None):
     return styles.load_font(size, bold, art, family)
@@ -115,10 +115,6 @@ def estimate_font_size(arr, b, margin=2):
         return default
     sizes.sort()
     return int(max(10, min(80, sizes[len(sizes) // 2])))
-
-
-def _stroke_px(st, s):
-    return styles.stroke_px(st, s)
 
 
 def _draw_char(draw, xy, ch, font, st, s):

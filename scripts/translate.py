@@ -93,10 +93,6 @@ def _ai_cfg(src, args=None):
     return cfg if (cfg.get('baseUrl') and cfg.get('apiKey') and cfg.get('model')) else None
 
 
-def _ai_available(src, args=None):
-    return _ai_cfg(src, args) is not None
-
-
 def _post_json(url, payload, api_key, timeout=120):
     data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
     req = urllib.request.Request(url, data=data, method='POST', headers={

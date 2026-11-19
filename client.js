@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-manga-workflow',
   factory(require) {
   // 版本号(发布时同步 package.json / 桌面端 mark_tool.py)
-  const APP_VERSION = 'V1.12';
+  const APP_VERSION = 'V1.12.2';
 
     const React = require('react');
     const h = React.createElement;
@@ -1965,8 +1965,12 @@ h('div', { style: S.row },
             await new Promise((r) => setTimeout(r, 1200));
             const j = await api(`/job?id=${encodeURIComponent(jobId)}`);
             if (j.log && j.log !== lastLog) { lastLog = j.log; setLog(j.log); }
+            if (j.progress) {
+              setMsg(`${label}:${j.progress.pct}% · ${j.progress.label}`);
+            }
             if (j.status !== 'running') {
               setLog(`[${label}] exit=${j.code}\n${j.log || ''}`);
+              setMsg(`${label}:${j.code === 0 ? '完成' : '失败'}`);
               break;
             }
           }
@@ -2003,7 +2007,9 @@ h('div', { style: S.row },
           title: 'DSH 汉化模式(整本接管)',
           body: `整本框数:${est ? est.boxes : '?'} 个(未翻译 ${est ? est.todo : '?'})\n`
             + `预计消耗:${money(est)}(仅视觉识别;DSH 翻译走额度)\n`
-            + '流程:整本视觉识别 → DSH 翻译 → 设为参与嵌字 → 校对\n'
+            + '分 4 阶段(会显示百分比进度):\n'
+            + '  1) 视觉识别整本(0~58%)  2) DSH 翻译(58~87%)\n'
+            + '  3) 设为参与嵌字(87~92%)  4) 校对(92~100%)\n'
             + '⚠ 整本识别耗时与花费都较高\n\n开始吗?',
           okText: '开始',
           onOk: async () => {

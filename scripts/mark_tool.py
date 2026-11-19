@@ -16,7 +16,7 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageDraw, ImageTk
-import json, os, sys, glob, subprocess, threading
+import json, os, sys, subprocess, threading
 import styles
 
 # 项目根目录(本文件所在 manga_tool 的上一级),所有路径从这里推导,避免写死个人目录

@@ -1242,11 +1242,6 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
     }
   }
 
-  function maskKey(k) {
-    if (!k) return ''
-    return k.length <= 8 ? '****' : k.slice(0, 4) + '****' + k.slice(-4)
-  }
-
   async function testAiTrans(baseUrl, model, apiKey) {
     const t0 = Date.now()
     try {
@@ -1372,6 +1367,12 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
         yuanMin, yuanMax, note: '视觉识别按框计费;DSH 翻译走 DSH 额度,不额外计费' })
     }
 
+    function setProgress(job, pct, label) {
+      const p = Math.max(0, Math.min(100, Math.round(pct)))
+      job.progress = { pct: p, label }
+      job.log += '\n[进度] ' + p + '% · ' + label + '\n'
+    }
+
     function markSfxParticipate(dir, page, onlySfx) {
       const regF = path.join(dir, 'regions.json')
       const trF = path.join(dir, 'trans.json')
@@ -1408,14 +1409,23 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
                       '--short-auto', '0']
         if (body.page) args.push('--page', body.page)
         if (config.lang) args.push('--lang', config.lang)
+        setProgress(job, 5, '拟声词识别:准备')
         job.log += '[拟声词识别] 视觉引擎读取中…\n'
-        const r = await runProcess(pythonPath, args, env, (t) => { job.log += t })
+        const r = await runProcess(pythonPath, args, env, (t) => {
+          job.log += t
+          const m = /进度\s+(\d+)\/(\d+)/.exec(t)
+          if (m) setProgress(job, 5 + 65 * (Number(m[1]) / Math.max(1, Number(m[2]))), '拟声词识别 ' + m[1] + '/' + m[2])
+        })
         job.log += '\n[拟声词识别] exit=' + r.code + '\n'
+        setProgress(job, 72, '拟声词识别:完成')
+        setProgress(job, 75, 'DSH 翻译中')
         job.log += '[DSH 翻译] 翻译拟声词…\n'
         const n = await dshTranslateFolder(dir, body.page || null, (t) => { job.log += t }, false)
         job.log += '[DSH 翻译] ' + n + ' 条\n'
+        setProgress(job, 92, '设为参与嵌字')
         const m = markSfxParticipate(dir, body.page || null, true)
         job.log += '[参与嵌字] 新增 ' + m + ' 个拟声词框\n'
+        setProgress(job, 100, '完成')
         job.code = 0
         job.status = 'done'
       })().catch((e) => { job.status = 'error'; job.code = 1; job.log += '\n[失败] ' + String((e && e.message) || e) })
@@ -1435,22 +1445,42 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
       jobs.set(id, job)
       ;(async () => {
         const env = { ...runtimeEnv, MANGA_ENV_DIR: envDirCfg() }
-        job.log += '[DSH 汉化] 1/4 视觉识别整本…\n'
+        setProgress(job, 1, '准备')
+        const regAll = loadJson(path.join(dir, 'regions.json')) || {}
+        const totalPages = Object.keys(regAll).filter((k) => (regAll[k] || []).length).length
+        job.log += '[DSH 汉化] 1/4 视觉识别整本(' + totalPages + ' 页)…\n'
         const r1 = await runProcess(pythonPath,
           [scriptPath('ocr_fallback.py'), dir, '--mode', 'all', '--force', '--short-auto', '0'], env,
-          (t) => { job.log += t })
+          (t) => {
+            job.log += t
+            const m = /进度\s+(\d+)\/(\d+)/.exec(t)
+            if (m) setProgress(job, 3 + 52 * (Number(m[1]) / Math.max(1, Number(m[2]))),
+              '视觉识别 ' + m[1] + '/' + m[2])
+          })
         job.log += '\n[DSH 汉化] 识别 exit=' + r1.code + '\n'
+        setProgress(job, 58, '视觉识别完成')
         job.log += '[DSH 汉化] 2/4 DSH 翻译整本…\n'
-        const n = await dshTranslateFolder(dir, null, (t) => { job.log += t }, false)
+        let donePages = 0
+        const n = await dshTranslateFolder(dir, null, (t) => {
+          job.log += t
+          if (t.includes('[DSH 翻译]') && t.includes('条完成')) {
+            donePages += 1
+            setProgress(job, 58 + 27 * (donePages / Math.max(1, totalPages)),
+              'DSH 翻译 ' + donePages + '/' + totalPages)
+          }
+        }, false)
         job.log += '[DSH 汉化] 翻译 ' + n + ' 条\n'
+        setProgress(job, 87, '翻译完成')
         job.log += '[DSH 汉化] 3/4 设为参与嵌字…\n'
         const m = markSfxParticipate(dir, null, false)
         job.log += '[DSH 汉化] 参与 +' + m + ' 框\n'
+        setProgress(job, 92, '设为参与嵌字完成')
         job.log += '[DSH 汉化] 4/4 校对…\n'
         const r2 = await runProcess(pythonPath,
           [scriptPath('proofread.py'), dir, '--stage', 'pre', '--mode', 'both'], env,
           (t) => { job.log += t })
         job.log += '\n[DSH 汉化] 校对 exit=' + r2.code + '\n'
+        setProgress(job, 100, '完成')
         job.code = 0
         job.status = 'done'
       })().catch((e) => { job.status = 'error'; job.code = 1; job.log += '\n[失败] ' + String((e && e.message) || e) })
