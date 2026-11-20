@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-manga-workflow',
   factory(require) {
   // 版本号(发布时同步 package.json / 桌面端 mark_tool.py)
-  const APP_VERSION = 'V1.13.3';
+  const APP_VERSION = 'V1.13.4';
 
     const React = require('react');
     const h = React.createElement;
@@ -638,7 +638,7 @@ window.__ModuleLoader__.load({
 
       const TIPS = [
         '【强烈建议】',
-        '1. 拟声词不要用「GPU 去字(LaMa)」:拟声词大多压在画面、网点、线条上,LaMa 修复会把画面糊成一片,',
+        '1. 拟声词不要用「抹除+GPU」:拟声词大多压在画面、网点、线条上,LaMa 修复会把画面糊成一片,',
         '   效果普遍很差;拟声词建议用「译文直盖」,或按画面情况用「色块覆盖」。',
         '2. 翻译请接入 API(设置 → 视觉引擎里配的 Kimi / DeepSeek 等会自动优先用于翻译);',
         '   免费渠道(Google / MyMemory)质量明显差,常出现错译、音译乱翻、标点错乱。',
@@ -780,7 +780,7 @@ window.__ModuleLoader__.load({
               '',
               '【3】翻译',
               '   · 免费引擎或 DSH 模型翻译(整本/本页);',
-              '   · 复杂单页可以用「单页识图翻译」或「单页拟声词识别填词」——',
+              '   · 复杂单页可以用「单页识图翻译」或「拟声词识别填词」(本页)——',
               '     这两个会调用**付费外部视觉引擎**(单价同上),点击前会显示预估金额。',
               '',
               '【4】自动校对:点「校对」;嵌字前还会自动跑一遍体检(数组对齐/无效译文/艺术字/同源拟声统一)。',
@@ -819,8 +819,13 @@ window.__ModuleLoader__.load({
               '',
               '【取消当前任务】工作台新增按钮:终止正在运行的 OCR / 翻译 / 校对 / 嵌字 / DSH 接管任务',
         '(会杀进程树,任务状态变为「已取消」;任务结束后按钮会提示没有运行中的任务)。',
-        '【auto 框】自动标框产生的框默认不参与嵌字;可用「本页auto→参与 / 仅补有译文的 / 全书auto参与」批量处理,',
-              '或勾「体检时auto参与」让体检自动把有译文的 auto 框纳入。',
+        '【auto 框与三个参与选项】(网页端专属)',
+              '· auto 框 = 自动标框/自动检测产生的框,默认不参与嵌字(防止误标上屏);',
+              '  「本页auto→参与」:把**当前页所有框**设为参与(不管有没有译文,建议整页都确认过再用);',
+              '  「仅补有译文的」:只把当前页**已有译文**的 auto 框设为参与(最安全,推荐);',
+              '  「全书auto参与」:遍历全书,把**所有有译文的** auto 框设为参与(最慢,建议先保存/校对);',
+              '  「体检时auto参与」:勾选后,点「确认嵌字」时体检阶段自动执行「仅补有译文的」(全书范围),',
+              '  不用手动点按钮;三个按钮改完都要点「保存」才生效。',
               '【嵌字工作区】设置里指定目录:嵌字报告写入工作区 manga_reports/;未设置时启动页会提示。',
             ],
             style: S.muted,
@@ -1360,7 +1365,7 @@ h('div', { style: S.row },
             '嵌字完成后会把结果报告写到这个目录(及其 manga_reports/),并生成待汇报队列;未设置时启动页/确认嵌字会提示。'),
           h('div', { style: { ...S.muted, fontSize: '11px', marginBottom: '6px', whiteSpace: 'pre-wrap' } },
             '📌 建议:在 DSH 里给漫画插件单独开一个工作区和一个会话,这里选你创建的那个工作区;\n'
-            + '后续把「交给 DSH 更正错误」也放在这个工作区的同一个会话里进行,报告与对话记录就能集中在一处。'),
+            + '后续把「在对话里让 DSH 更正错误」也放在这个工作区的同一个会话里进行,报告与对话记录就能集中在一处。'),
           h('div', { style: S.row },
             h('input', {
               style: { ...S.input, minWidth: '320px' },
@@ -1743,7 +1748,7 @@ h('div', { style: S.row },
       const [sfxStyle, setSfxStyle] = React.useState('sfx_classic');
       const [titleStyle, setTitleStyle] = React.useState('title_bold');
       const [fontByKind, setFontByKind] = React.useState({ body: '', sfx: '', title: '' });
-      const [styleOpen, setStyleOpen] = React.useState(true);
+      const [styleOpen, setStyleOpen] = React.useState(false);   // 文字样式栏默认收起
       const [stylePresets, setStylePresets] = React.useState(null);
 
       // 文字样式预设
@@ -2504,7 +2509,7 @@ h('div', { style: S.row },
         (!wsExists) ? h('div', { style: { ...S.box, borderColor: 'rgba(255,180,0,0.5)' } },
           h('div', { style: { fontWeight: 600, marginBottom: '4px' } }, '⚠ 嵌字工作区未就绪'),
           h('div', { style: { ...S.muted, fontSize: '11px' } },
-            '嵌字报告与对话汇报需要工作区目录。请到「设置 → 嵌字工作区」指定并点「检查/创建」;'
+            '嵌字报告与对话汇报需要工作区目录。请到「设置 → 嵌字工作区」指定并点「检查 / 创建」;'
             + '确认嵌字时会再核实一次,缺失会自动创建。'),
         ) : null,
         info ? h('div', { style: S.box },
@@ -2741,16 +2746,19 @@ h('div', { style: S.row },
             + 'N=切类型 · E=切原文处理(直盖→抹除→覆盖) · V/H=竖/横 · A=自动 · Ctrl+Z 撤销 · Ctrl+S 保存 · ←/→ 翻页'),
         ) : null,
         log ? h('div', { style: S.log }, log) : null,
-        // 底部常驻提示(滚动到底也能看到当前进度/消息)
+        // 底部常驻提示:固定在最下面、黄色纯文字、无背景,不挡点击
         h('div', {
           style: {
             position: 'sticky', bottom: 0, marginTop: '6px',
-            background: 'rgba(32,33,36,0.95)', borderTop: '1px solid rgba(128,128,128,0.35)',
-            padding: '4px 8px', fontSize: '11px', color: '#ffd24d',
-            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', zIndex: 5,
+            background: 'transparent', borderTop: 'none',
+            padding: '1px 10px 2px', fontSize: '11px', color: '#ffd24d',
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+            zIndex: 50, pointerEvents: 'none',
+            textShadow: '0 1px 2px rgba(0,0,0,0.95)',
           },
           title: msg || '',
         }, (loading ? '⏳ ' : '') + (msg || '就绪')),
+
         confirmDlg ? h('div', {
           style: { marginTop: '8px' },   // 在当前工作台界面内联显示,不弹窗
         },

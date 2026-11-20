@@ -285,8 +285,8 @@ class MarkTool:
         tk.Label(top2, text="方向:", fg='#2a5d8f').pack(side=tk.LEFT)
         for _v, _t in (('auto', '自动检测'), ('v', '竖排'), ('h', '横排')):
             tk.Radiobutton(top2, text=_t, variable=self.dir_mode, value=_v).pack(side=tk.LEFT)
-        tk.Button(top2, text="样式 ▾", width=7, command=self._toggle_style_bar
-                  ).pack(side=tk.LEFT, padx=(6, 0))
+        self._style_btn = tk.Button(top2, text="样式 ▸", width=7, command=self._toggle_style_bar)
+        self._style_btn.pack(side=tk.LEFT, padx=(6, 0))
         tk.Label(top2, text="语言:").pack(side=tk.LEFT)
         tk.Radiobutton(top2, text="日", variable=self.lang, value="ja").pack(side=tk.LEFT)
         tk.Radiobutton(top2, text="韩", variable=self.lang, value="ko").pack(side=tk.LEFT)
@@ -303,7 +303,11 @@ class MarkTool:
                   ).pack(side=tk.LEFT, padx=(4, 0))
         tk.Button(style_bar, text='应用到全部', width=9, command=self.apply_style_all
                   ).pack(side=tk.LEFT, padx=(2, 0))
-        self._style_visible = True
+        self._style_visible = False   # 默认收起文字样式栏
+        try:
+            self._style_box.pack_forget()
+        except Exception:
+            pass
         self._refresh_style_buttons()
 
         # 选中框时:改工具栏设置 → 立即写回该框
@@ -813,6 +817,10 @@ class MarkTool:
                     self._style_box.pack(side=tk.TOP, fill=tk.X, padx=6, pady=(2, 0))
             else:
                 self._style_box.pack_forget()
+        except Exception:
+            pass
+        try:
+            self._style_btn.config(text='样式 ▾' if self._style_visible else '样式 ▸')
         except Exception:
             pass
         self.status.config(text='样式栏已' + ('展开' if self._style_visible else '收起'))
@@ -2746,7 +2754,7 @@ def _style_preview_photo(style_id, w=54, h=30, font=''):
 
 
 # ---------------- 版本 ----------------
-APP_VERSION = 'V1.13'
+APP_VERSION = 'V1.13.4'
 
 # ---------------- 帮助窗口(程序内渲染,不依赖 .md 文件关联)----------------
 
