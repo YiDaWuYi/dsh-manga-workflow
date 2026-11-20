@@ -428,7 +428,25 @@ def main():
                     d2 = ImageDraw.Draw(tmp)
                     src_img = Image.fromarray(arr_orig)
                     for r in cover_list:
-                        styles.paint_cover(d2, r, styles.sample_cover_color(src_img, r))
+                        _i = regions[page].index(r)
+                        _zh = zh_list[_i] if _i < len(zh_list) else ''
+                        _kind = styles.kind_of(r)
+                        _w, _h = int(r.get('w', 1)), int(r.get('h', 1))
+                        _v = bool(r.get('vertical', True))
+                        _tight = False
+                        _bad = False
+                        if _kind == 'body':
+                            _st0 = min(max(int(min(_w, _h) * 0.28), 22), 40)
+                            _s, _bad = fit_size(d2, _zh, _w, _h, _st0, {}, _v,
+                                                grow=False, cap_ratio=0.9, lo=14)
+                            _tight = (not _bad) and _s < _st0
+                        elif _kind == 'plain':
+                            _s, _bad = fit_size(d2, _zh, _w, _h, 20, {}, _v,
+                                                grow=True, cap_ratio=0.9, lo=18)
+                        if _bad:
+                            continue   # 直盖:跳过色块
+                        styles.paint_cover(d2, r, styles.sample_cover_color(src_img, r),
+                                           shape='ellipse' if _tight else 'rect')
                     arr = np.array(tmp)
         img2 = Image.fromarray(arr)
         draw = ImageDraw.Draw(img2)
@@ -463,10 +481,17 @@ def main():
                 # 字号自适应:
                 #   正文 → 超框自动缩小;拟声词 → 自动放大到接近填满框(提升可读性)
                 is_body = (kind == 'body')
-                grow = (kind == 'plain' or is_body) and AutoSizeOn
-                _cap = 0.55 if is_body else 0.9
+                grow = (kind == 'plain') and AutoSizeOn
+                _cap = 0.9
                 _lo = 14 if is_body else 18
-                new_size, bad = fit_size(draw, zh, w, h, size, st, vertical, grow=grow, cap_ratio=_cap, lo=_lo)
+                if is_body:
+                    # 正文:字号保持稳定(20~40),放不下只缩不放,避免忽大忽小
+                    _start = min(max(int(min(w, h) * 0.28), 22), 40)
+                    new_size, bad = fit_size(draw, zh, w, h, _start, st, vertical,
+                                             grow=False, cap_ratio=0.9, lo=14)
+                    new_size = max(new_size, 14)   # 正文字号下限 14,避免个别框过小
+                else:
+                    new_size, bad = fit_size(draw, zh, w, h, size, st, vertical, grow=grow, cap_ratio=_cap, lo=_lo)
                 # 当前方向怎么都放不下 → 试另一方向(竖排↔横排),哪个放得下用哪个
                 if bad:
                     alt_size, alt_bad = fit_size(draw, zh, w, h, size, st, not vertical, grow=grow, cap_ratio=_cap, lo=_lo)
@@ -490,7 +515,7 @@ def main():
                     # 关键:按扩大后的区域重新算字号(拟声词可放大到填满扩展区),
                     # 否则小框里的拟声词会一直卡在下限字号,看起来特别小。
                     try:
-                        s2, bad2 = fit_size(draw, zh, ew, eh, max(lo_s, int(r.get('size', 20) or 20)),
+                        s2, bad2 = fit_size(draw, zh, ew, eh, min(max(lo_s, int(r.get('size', 20) or 20)), 40 if is_body else 999),
                                             st, vertical, grow=grow, cap_ratio=_cap, lo=_lo)
                         if s2 > size:
                             size = s2

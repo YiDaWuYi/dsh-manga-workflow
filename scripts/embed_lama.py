@@ -103,7 +103,25 @@ def main():
                     if not _zh or _r.get('auto'):
                         continue
                     if styles.cover_mode(_r) == 'cover':
-                        styles.paint_cover(_d2, _r, styles.sample_cover_color(_src_img, _r))
+                        # 放不下 → 自动「直盖」(不涂色块,文字直接叠在原图);
+                        # 放得下但很吃紧 → 椭圆色块;宽松 → 圆角矩形(均内缩,不超框)
+                        _kind = styles.kind_of(_r)
+                        _w, _h = int(_r.get('w', 1)), int(_r.get('h', 1))
+                        _v = bool(_r.get('vertical', True))
+                        _tight = False
+                        _bad = False
+                        if _kind == 'body':
+                            _st0 = min(max(int(min(_w, _h) * 0.28), 22), 40)
+                            _s, _bad = fit_size(_d2, _zh, _w, _h, _st0, {}, _v,
+                                                grow=False, cap_ratio=0.9, lo=14)
+                            _tight = (not _bad) and _s < _st0
+                        elif _kind == 'plain':
+                            _s, _bad = fit_size(_d2, _zh, _w, _h, 20, {}, _v,
+                                                grow=True, cap_ratio=0.9, lo=18)
+                        if _bad:
+                            continue   # 直盖:跳过色块
+                        styles.paint_cover(_d2, _r, styles.sample_cover_color(_src_img, _r),
+                                           shape='ellipse' if _tight else 'rect')
         except Exception as _e:
             print('[覆盖] 失败:', _e)
         # 非 GPU 的「抹除」框:LaMa 没处理,这里用普通抹除补上
@@ -161,12 +179,19 @@ def main():
             else:
                 # 与 embed_regions 一致:可读下限 + 放不下时允许局部溢出并重算字号
                 is_body = (kind == 'body')
-                grow = (kind == 'plain' or is_body) and AUTO_SIZE
-                _cap = 0.55 if is_body else 0.9
+                grow = (kind == 'plain') and AUTO_SIZE
+                _cap = 0.9
                 _lo = 14 if is_body else 18
                 base_sz = int(size or 20)
-                s_fit, bad = fit_size(draw, zh, w, h, base_sz, st, vertical, grow=grow,
-                                      cap_ratio=_cap, lo=_lo)
+                if is_body:
+                    # 正文:字号保持稳定(20~40),放不下只缩不放
+                    base_sz = min(max(int(min(w, h) * 0.28), 22), 40)
+                    s_fit, bad = fit_size(draw, zh, w, h, base_sz, st, vertical,
+                                          grow=False, cap_ratio=0.9, lo=14)
+                    s_fit = max(s_fit, 14)
+                else:
+                    s_fit, bad = fit_size(draw, zh, w, h, base_sz, st, vertical, grow=grow,
+                                          cap_ratio=_cap, lo=_lo)
                 if bad:
                     lo = _lo
                     ew, eh = ((int(w * 1.22), int(h * 1.12)) if grow

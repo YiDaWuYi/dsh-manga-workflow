@@ -128,7 +128,7 @@ def sample_cover_color(img, box, margin=8):
         return (255, 255, 255)
 
 
-def paint_cover(draw, box, color):
+def paint_cover(draw, box, color, shape='rect', inset=0.10):
     """用色块盖住原文。
 
     框选框:填满矩形;
@@ -150,7 +150,20 @@ def paint_cover(draw, box, color):
             draw.ellipse([pl[0][0] - brush, pl[0][1] - brush,
                           pl[0][0] + brush, pl[0][1] + brush], fill=color)
         return
-    draw.rectangle([x, y, x + w, y + h], fill=color)
+    # 只画在框内(内缩 10%,不挡框外画面);形状:rect=按框,ellipse=内接椭圆
+    ix, iy = int(w * inset), int(h * inset)
+    x0, y0 = x + ix, y + iy
+    x1, y1 = x + w - ix, y + h - iy
+    if x1 <= x0 or y1 <= y0:
+        x0, y0, x1, y1 = x, y, x + w, y + h
+    try:
+        if shape == 'ellipse':
+            draw.ellipse([x0, y0, x1, y1], fill=color)
+        else:
+            r = max(2, int(min(x1 - x0, y1 - y0) * 0.06))   # 圆角矩形,边缘更自然
+            draw.rounded_rectangle([x0, y0, x1, y1], radius=r, fill=color)
+    except Exception:
+        draw.rectangle([x0, y0, x1, y1], fill=color)
 
 
 def draw_title(draw, text, box, size, st=None):
