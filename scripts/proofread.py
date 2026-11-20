@@ -236,7 +236,7 @@ def check_post(src, lama, mode='both'):
     regions = _load(os.path.join(_dd(src), 'regions.json'))
     cfg = _load(os.path.join(_dd(src), 'config.json'))
     use_lama = lama or bool(cfg.get('lama'))
-    out_dir = os.path.join(src, 'out_lama' if use_lama else 'out')
+    out_dir = os.path.join(_dd(src), 'out_lama' if use_lama else 'out')
 
     if not os.path.isdir(out_dir):
         issues.append(("error", f"缺少输出目录: {out_dir}"))
@@ -313,7 +313,7 @@ def main():
                 'missing_translations': _missing,
                 'missing_total': sum(len(v) for v in _missing.values())}
         try:
-            with open(os.path.join(src, 'proofread_report.json'), 'w', encoding='utf-8') as _f:
+            with open(os.path.join(_dd(src), 'proofread_report.json'), 'w', encoding='utf-8') as _f:
                 json.dump(_rep, _f, ensure_ascii=False, indent=1)
         except Exception:
             pass

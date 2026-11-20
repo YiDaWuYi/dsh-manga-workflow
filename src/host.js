@@ -1146,7 +1146,7 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
       const root = cacheRoot()
       const items = [
         { key: 'lama_io', label: '嵌字临时文件(_lama_io)', kind: 'cache', dir: path.join(root, '_lama_io') },
-        { key: 'preview', label: '工作区预览缓存', kind: 'cache', dir: path.join(root, 'projects') },
+        { key: 'preview', label: '工作区预览缓存', kind: 'cache', dir: path.join(root, '_preview_cache') },
         { key: 'torch', label: 'PyTorch / LaMa 模型', kind: 'model', dir: String(runtimeEnv.TORCH_HOME || '') },
         { key: 'hf', label: 'HuggingFace 模型', kind: 'model', dir: String(runtimeEnv.HF_HOME || '') },
         { key: 'easyocr', label: 'EasyOCR 模型', kind: 'model', dir: String(runtimeEnv.EASYOCR_MODULE_PATH || '') },
@@ -1184,7 +1184,21 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
       if (!targets.length) return json(res, 400, { ok: false, error: '没有选中可删除的项' })
       const done = []
       let freed = 0
+      // 保护:项目库、成品、源书目录绝不允许被“清理缓存”删除
+      const wsRoot = String(readUiSettings().workspaceDir || '').trim()
+      const norm = (p) => path.resolve(String(p || '')).toLowerCase()
+      const guarded = wsRoot
+        ? [path.join(wsRoot, 'projects'), path.join(wsRoot, '已完成'), path.join(wsRoot, '工作区文件')].map(norm)
+        : []
+      const isGuarded = (dir) => {
+        const d = norm(dir)
+        if (!d) return true
+        return guarded.some((g) => d === g || d.startsWith(g + path.sep) || g.startsWith(d + path.sep))
+      }
       for (const it of targets) {
+        if (isGuarded(it.dir)) {
+          return json(res, 400, { ok: false, error: `拒绝删除受保护目录: ${it.label} (${it.dir})`, done })
+        }
         const before = it.sizeMB
         try {
           rmSync(it.dir, { recursive: true, force: true })

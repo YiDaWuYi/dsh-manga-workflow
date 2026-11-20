@@ -150,7 +150,7 @@ def main():
 
     # 备份 + 写回
     for name, data in (('ocr_text.json', ocr), ('trans.json', tr), ('regions.json', reg)):
-        f = os.path.join(folder, name)
+        f = os.path.join(_dd(folder), name)
         if os.path.exists(f):
             try:
                 with open(f + '.bak_preflight', 'wb') as fb:
@@ -173,7 +173,7 @@ def main():
         'unified_total': unified_total,
         'auto_cleared': auto_cleared,
     }
-    save(os.path.join(folder, 'preflight_report.json'), rep)
+    save(os.path.join(_dd(folder), 'preflight_report.json'), rep)
     print(json.dumps(rep, ensure_ascii=False))
     return 0
 

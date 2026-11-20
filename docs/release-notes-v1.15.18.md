@@ -43,3 +43,9 @@
 ```
 
 或在设置页点「检查更新 → 更新测试版」自动下载到工作区 `dist/`。
+
+---
+
+### 本次补充（同版本 1.15.18 重新发布）
+
+- **插件列表图标**:换成用户提供的形象(`assets/icon-custom.png`);修复 DSH 读不到图标的问题——在 `package.json` 的 `exports` 里暴露 `"./package.json"` 与 `"./icon"`,DSH 才能通过包导出解析 manifest 与图标文件。

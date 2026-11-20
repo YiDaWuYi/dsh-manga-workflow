@@ -326,13 +326,12 @@ def main():
                     alts = translate_all_engines(str(texts[i]), free_engines, opener, sl)
                     alt_page.setdefault(page, []).append({'i': i, 'src': str(texts[i]), 'alts': alts})
         trans[page] = out
-        trans[page] = out
         print(f'进度 {pi}/{len(pages)} 第{page}页 翻译{len(out)}条', flush=True)
         json.dump(trans, open(trans_file, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
 
     if alt_page:
         try:
-            json.dump(alt_page, open(os.path.join(src, 'trans_alt.json'), 'w', encoding='utf-8'),
+            json.dump(alt_page, open(os.path.join(_dd(src), 'trans_alt.json'), 'w', encoding='utf-8'),
                       ensure_ascii=False, indent=1)
             print('免费渠道对比已写入 trans_alt.json', flush=True)
         except Exception:

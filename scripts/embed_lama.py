@@ -76,9 +76,14 @@ def main():
     env = dict(os.environ)
     env['TORCH_HOME'] = TORCH_HOME
     env['HF_HOME'] = HF_HOME
-    r = subprocess.run([IOPAINT, 'run', '--model=lama', '--device=cuda',
-                        '--image', ind, '--mask', mkd, '--output', outd],
-                       env=env, capture_output=True, text=True)
+    try:
+        r = subprocess.run([IOPAINT, 'run', '--model=lama', '--device=cuda',
+                            '--image', ind, '--mask', mkd, '--output', outd],
+                           env=env, capture_output=True, text=True)
+    except FileNotFoundError:
+        print('[错误] 找不到 GPU 去字程序(io-paint):%s' % IOPAINT)
+        print('  请先在「设置 → 运行环境」里装「GPU 去字」依赖,或改用普通抹除(不带 --lama)。')
+        return 2
     print('iopaint 返回码', r.returncode)
     if r.returncode != 0:
         print(r.stderr[-800:])

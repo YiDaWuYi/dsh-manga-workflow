@@ -175,7 +175,7 @@ class MarkTool:
                     continue
                 nb[pg] = [{'x': b.get('x'), 'y': b.get('y'), 'w': b.get('w'), 'h': b.get('h'),
                            'ocr': o[k], 'trans': t2[k]} for k, b in enumerate(arr)]
-            with open(os.path.join(self.src_dir, '_sync_base.json'), 'w', encoding='utf-8') as f:
+            with open(os.path.join(self.data_dir, '_sync_base.json'), 'w', encoding='utf-8') as f:
                 json.dump(nb, f, ensure_ascii=False, indent=1)
         except Exception:
             pass
@@ -1336,7 +1336,7 @@ class MarkTool:
             messagebox.showinfo('提示', '正在处理中,请稍候...')
             return
         # 旧配对基线(上次同步/识别时的「框坐标 + 原文 + 译文」)
-        base_file = os.path.join(self.src_dir, '_sync_base.json')
+        base_file = os.path.join(self.data_dir, '_sync_base.json')
         base = self._load(base_file) if os.path.exists(base_file) else {}
         try:
             self._save()
@@ -1430,7 +1430,7 @@ class MarkTool:
                            'ocr': o2[k] if k < len(o2) else '',
                            'trans': t2[k] if k < len(t2) else ''}
                           for k, b in enumerate(arr2 or [])]
-            with open(os.path.join(self.src_dir, '_sync_base.json'), 'w', encoding='utf-8') as f:
+            with open(os.path.join(self.data_dir, '_sync_base.json'), 'w', encoding='utf-8') as f:
                 json.dump(nb, f, ensure_ascii=False, indent=1)
         except Exception:
             pass

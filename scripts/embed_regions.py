@@ -395,7 +395,7 @@ def main():
         return
     regions_file = args[1] if len(args) > 1 else os.path.join(_dd(src), "regions.json")
     trans_file = args[2] if len(args) > 2 else os.path.join(_dd(src), "trans.json")
-    out_dir = args[3] if len(args) > 3 else os.path.join(src, "preview" if preview else "out")
+    out_dir = args[3] if len(args) > 3 else os.path.join(_dd(src), "preview" if preview else "out")
     os.makedirs(out_dir, exist_ok=True)
     regions = json.load(open(regions_file, encoding='utf-8'))
     trans = json.load(open(trans_file, encoding='utf-8'))
@@ -630,7 +630,7 @@ def main():
             print((r.stdout or '').strip())
         except Exception:
             print('(校对输出含控制台无法显示的字符,已写入 _proofread_post.txt)')
-            open(os.path.join(src, '_proofread_post.txt'), 'w', encoding='utf-8').write(r.stdout or '')
+            open(os.path.join(_dd(src), '_proofread_post.txt'), 'w', encoding='utf-8').write(r.stdout or '')
     except Exception as e:
         print(f'[校对] 运行失败: {e}')
 

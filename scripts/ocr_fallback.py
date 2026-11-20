@@ -118,12 +118,12 @@ def box_key(page, idx, box, text=None):
 
 
 def load_done(folder):
-    return load_json(os.path.join(folder, DONE_FILE), {}) or {}
+    return load_json(os.path.join(_dd(folder), DONE_FILE), {}) or {}
 
 
 def save_done(folder, done):
     try:
-        save_json(os.path.join(folder, DONE_FILE), done)
+        save_json(os.path.join(_dd(folder), DONE_FILE), done)
     except Exception:
         pass
 
