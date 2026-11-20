@@ -3489,7 +3489,10 @@ def show_home():
 def main():
     if len(sys.argv) >= 2 and os.path.isdir(sys.argv[1]):
         src = sys.argv[1]
-        regions = sys.argv[2] if len(sys.argv) > 2 else os.path.join(src, "regions.json")
+        # 项目库模式:宿主(网页端「标框」按钮)会传 MANGA_DATA_DIR,数据放在工作区项目目录,
+        # 源目录保持只读。直接双击运行时没有该变量,退回旧行为(数据放书里)。
+        data_dir = os.environ.get('MANGA_DATA_DIR') or src
+        regions = sys.argv[2] if len(sys.argv) > 2 else os.path.join(data_dir, "regions.json")
         _open_editor(src, regions)
     else:
         show_home()

@@ -9,6 +9,11 @@ import os
 import re
 import sys
 
+
+def _dd(p):
+    """工作数据目录:项目库模式由 MANGA_DATA_DIR 指定(源目录只读),否则退回源目录。"""
+    return os.environ.get('MANGA_DATA_DIR') or p
+
 CJK = re.compile(r'[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]')
 
 
@@ -54,9 +59,9 @@ def main():
         if i + 1 < len(args):
             page_only = args[i + 1]
 
-    reg = load(os.path.join(folder, 'regions.json'), {})
-    ocr = load(os.path.join(folder, 'ocr_text.json'), {})
-    tr = load(os.path.join(folder, 'trans.json'), {})
+    reg = load(os.path.join(_dd(folder), 'regions.json'), {})
+    ocr = load(os.path.join(_dd(folder), 'ocr_text.json'), {})
+    tr = load(os.path.join(_dd(folder), 'trans.json'), {})
     pages = [page_only] if page_only else sorted(reg)
 
     aligned = 0

@@ -20,6 +20,11 @@ import math
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+
+def _dd(p):
+    """工作数据目录:项目库模式由 MANGA_DATA_DIR 指定(源目录只读),否则退回源目录。"""
+    return os.environ.get('MANGA_DATA_DIR') or p
+
 def load_font(size, bold=False, art=False, family=None):
     return styles.load_font(size, bold, art, family)
 
@@ -356,7 +361,7 @@ def main():
     auto_size = True
     auto_dir = True
     try:
-        _cfg = json.load(open(os.path.join(src, 'config.json'), encoding='utf-8'))
+        _cfg = json.load(open(os.path.join(_dd(src), 'config.json'), encoding='utf-8'))
         if not lama:
             lama = bool(_cfg.get('lama', False))
         auto_size = bool(_cfg.get('auto_size', True))
@@ -388,8 +393,8 @@ def main():
         except Exception as e:
             print('[校对] 运行失败:', e)
         return
-    regions_file = args[1] if len(args) > 1 else os.path.join(src, "regions.json")
-    trans_file = args[2] if len(args) > 2 else os.path.join(src, "trans.json")
+    regions_file = args[1] if len(args) > 1 else os.path.join(_dd(src), "regions.json")
+    trans_file = args[2] if len(args) > 2 else os.path.join(_dd(src), "trans.json")
     out_dir = args[3] if len(args) > 3 else os.path.join(src, "preview" if preview else "out")
     os.makedirs(out_dir, exist_ok=True)
     regions = json.load(open(regions_file, encoding='utf-8'))

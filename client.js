@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-manga-workflow',
   factory(require) {
   // 版本号(发布时同步 package.json / 桌面端 mark_tool.py)
-  const APP_VERSION = 'V1.14.4';
+  const APP_VERSION = 'V1.15';
 
     const React = require('react');
     const h = React.createElement;
@@ -832,7 +832,12 @@ window.__ModuleLoader__.load({
               '  「全书auto参与」:遍历全书,把**所有有译文的** auto 框设为参与(最慢,建议先保存/校对);',
               '  「体检时auto参与」:勾选后,点「确认嵌字」时体检阶段自动执行「仅补有译文的」(全书范围),',
               '  不用手动点按钮;三个按钮改完都要点「保存」才生效。',
-              '【嵌字工作区】设置里指定目录:嵌字报告写入工作区 manga_reports/;未设置时启动页会提示。',
+              '【项目库 / 嵌字工作区】先到「设置」指定嵌字工作区,然后选任意一本漫画文件夹开始:',
+              '  · 程序在工作区 projects/<书名>/ 里存框、译文、原文、配置(源漫画文件夹只读,不会被改动);',
+              '  · 旧书第一次打开会自动把书里已有的数据导入项目库,书里原文件保留;',
+              '  · 嵌字完成后成品自动输出到 <工作区>/已完成/<书名>/,目录会自动创建;',
+              '  · 同一本书再次打开会复用同一个项目;不同路径的同名书会自动加 __2/__3;',
+              '  · 没设置工作区时不允许开始,会提示先去设置。',
             ],
             style: S.muted,
           }),
@@ -1368,7 +1373,8 @@ h('div', { style: S.row },
         h('div', { style: { ...S.box, marginTop: '10px' } },
           h('div', { style: { fontWeight: 600, marginBottom: '6px' } }, '嵌字工作区(嵌字报告 / 对话汇报)'),
           h('div', { style: { ...S.muted, fontSize: '11px', marginBottom: '6px' } },
-            '嵌字完成后会把结果报告写到这个目录(及其 manga_reports/),并生成待汇报队列;未设置时启动页/确认嵌字会提示。'),
+            '项目库根目录:每本书的框/译文/原文/配置存到 projects/<书名>/,成品输出到 已完成/<书名>/;'
+            + '源漫画文件夹只读。未设置时不允许开始工作。'),
           h('div', { style: { ...S.muted, fontSize: '11px', marginBottom: '6px', whiteSpace: 'pre-wrap' } },
             '📌 建议:在 DSH 里给漫画插件单独开一个工作区和一个会话,这里选你创建的那个工作区;\n'
             + '后续把「在对话里让 DSH 更正错误」也放在这个工作区的同一个会话里进行,报告与对话记录就能集中在一处。'),
@@ -1679,6 +1685,7 @@ h('div', { style: S.row },
       });
       const [infra, setInfra] = React.useState(null);
       const [vision, setVision] = React.useState(null);
+      const [proj, setProj] = React.useState(null);   // 项目库:项目名/数据目录/成品目录
 
       const [info, setInfo] = React.useState(null);
       const [loading, setLoading] = React.useState(false);
@@ -1713,6 +1720,20 @@ h('div', { style: S.row },
         try { if (page) localStorage.setItem('manga-desk-page', page); } catch (e) { /* ignore */ }
       }, [page]);
       const [boxes, setBoxes] = React.useState([]);
+      // 项目库:选中书后询问 host 该项目的数据目录(没设置工作区会返回错误)
+      React.useEffect(() => {
+        if (!folder) { setProj(null); return undefined; }
+        let alive = true;
+        (async () => {
+          try {
+            const p = await api('/project?folder=' + encodeURIComponent(folder));
+            if (alive) setProj(p);
+          } catch (e) {
+            if (alive) setProj({ ok: false, error: String((e && e.message) || e) });
+          }
+        })();
+        return () => { alive = false; };
+      }, [folder]);
       const [msg, setMsg] = React.useState('');
       const textEdits = React.useRef(new Map());
       // 自动保存
@@ -1840,6 +1861,15 @@ h('div', { style: S.row },
         if (!folder) return;
         setLoading(true);
         try {
+          // 强制先设置「嵌字工作区」:没有工作区就不让开始(项目数据要存到工作区里)
+          let pj = null;
+          try { pj = await api('/project?folder=' + encodeURIComponent(folder)); } catch (e) { pj = null; }
+          setProj(pj);
+          if (!pj || !pj.ok) {
+            setMsg('请先在「设置」里指定嵌字工作区,再开始处理这本书');
+            setView('settings');
+            return;
+          }
           const d = await api(`/status?folder=${encodeURIComponent(folder)}`);
           // 关键:先拿到第一页数据再切视图,避免工作台先空一帧(图片区塌陷导致跳动)
           const first = page && d.pages.some((x) => x.page === page) ? page : (d.pages[0] && d.pages[0].page);
@@ -2541,8 +2571,20 @@ h('div', { style: S.row },
           h('button', { type: 'button', style: S.btn, onClick: () => setView('help') }, '帮助'),
           h('span', { style: { fontWeight: 600, fontSize: '13px' } }, '漫画工作台'),
           h('span', { style: { flex: 1 } }),
-          h('span', { style: { ...S.muted, maxWidth: '55%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, folder),
+          proj && proj.ok ? h('span', { style: S.chip, title: proj.dir || '' }, '项目 ' + (proj.name || '')) : null,
+          h('span', { style: { ...S.muted, maxWidth: '40%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, folder),
         ),
+        (proj && !proj.ok) ? h('div', { style: { ...S.box, borderColor: 'rgba(255,120,0,0.55)' } },
+          h('div', { style: { fontWeight: 600, marginBottom: '4px' } }, '⚠ 还没有设置「嵌字工作区」'),
+          h('div', { style: { ...S.muted, fontSize: '11px' } },
+            '标框/译文等数据会存到工作区的项目目录里(源漫画文件夹保持不动),成品输出到工作区的「已完成」文件夹。'),
+          h('div', { style: { ...S.row, marginTop: '6px' } },
+            h('button', { type: 'button', style: S.btn, onClick: () => setView('settings') }, '去设置'),
+            h('span', { style: { ...S.muted, fontSize: '11px' } }, String((proj && (proj.error || proj.code)) || '')),
+          ),
+        ) : null,
+        (proj && proj.ok) ? h('div', { style: { ...S.muted, fontSize: '11px', marginTop: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } },
+          '数据目录:' + (proj.dir || '') + ' · 成品输出:' + (proj.doneDir || '')) : null,
         (!wsExists) ? h('div', { style: { ...S.box, borderColor: 'rgba(255,180,0,0.5)' } },
           h('div', { style: { fontWeight: 600, marginBottom: '4px' } }, '⚠ 嵌字工作区未就绪'),
           h('div', { style: { ...S.muted, fontSize: '11px' } },

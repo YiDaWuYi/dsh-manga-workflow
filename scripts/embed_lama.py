@@ -15,6 +15,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from embed_regions import draw_vtext, draw_htext, estimate_font_size, detect_vertical, inpaint_rect, inpaint_mask, fit_size
 import styles
 
+
+def _dd(p):
+    """工作数据目录:项目库模式由 MANGA_DATA_DIR 指定(源目录只读),否则退回源目录。"""
+    return os.environ.get('MANGA_DATA_DIR') or p
+
 IOPAINT = os.path.join(BASE, '_venv', 'Scripts', 'iopaint.exe')
 LAMA_IO = os.path.join(BASE, '_lama_io')
 TORCH_HOME = os.path.join(BASE, '_torchcache')
@@ -43,8 +48,8 @@ def main():
     AUTO_DIR = '--no-auto-dir' not in sys.argv
     src = sys.argv[1] if len(sys.argv) > 1 else "."
     preview = '--preview' in sys.argv
-    regions = json.load(open(os.path.join(src, 'regions.json'), encoding='utf-8'))
-    trans = json.load(open(os.path.join(src, 'trans.json'), encoding='utf-8'))
+    regions = json.load(open(os.path.join(_dd(src), 'regions.json'), encoding='utf-8'))
+    trans = json.load(open(os.path.join(_dd(src), 'trans.json'), encoding='utf-8'))
 
     ind = os.path.join(LAMA_IO, 'in')
     mkd = os.path.join(LAMA_IO, 'mask')

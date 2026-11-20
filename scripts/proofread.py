@@ -19,6 +19,11 @@ import re
 import numpy as np
 from PIL import Image
 
+
+def _dd(p):
+    """工作数据目录:项目库模式由 MANGA_DATA_DIR 指定(源目录只读),否则退回源目录。"""
+    return os.environ.get('MANGA_DATA_DIR') or p
+
 EXTS = ('.webp', '.png', '.jpg', '.jpeg', '.bmp')
 
 
@@ -65,7 +70,7 @@ def _looks_garbled(t):
 def check_original(src, regions):
     """校对①原文:OCR 文本是否齐全/疑似失败。"""
     issues, warns = [], []
-    ocr = _load(os.path.join(src, 'ocr_text.json'))
+    ocr = _load(os.path.join(_dd(src), 'ocr_text.json'))
     pages = [p for p in regions if isinstance(regions[p], list) and regions[p]]
     if not ocr:
         warns.append("缺少 ocr_text.json(还没做自动识别)")
@@ -89,8 +94,8 @@ def check_original(src, regions):
 def check_translation(src, regions):
     """校对②原文对照中文译文:缺译、数量不符、疑似过长、疑似未翻译。"""
     issues, warns = [], []
-    trans = _load(os.path.join(src, 'trans.json'))
-    ocr = _load(os.path.join(src, 'ocr_text.json'))
+    trans = _load(os.path.join(_dd(src), 'trans.json'))
+    ocr = _load(os.path.join(_dd(src), 'ocr_text.json'))
     pages = [p for p in regions if isinstance(regions[p], list) and regions[p]]
     if not trans:
         issues.append(("error", "缺少 trans.json(还没有译文)"))
@@ -211,7 +216,7 @@ def structural_checks(folder, regions, ocr):
     return out
 
 def check_pre(src, mode='both'):
-    regions = _load(os.path.join(src, 'regions.json'))
+    regions = _load(os.path.join(_dd(src), 'regions.json'))
     if not regions:
         return [("error", "缺少 regions.json 或没有任何标框")], []
     pages = [p for p in regions if isinstance(regions[p], list) and regions[p]]
@@ -228,8 +233,8 @@ def check_pre(src, mode='both'):
 def check_post(src, lama, mode='both'):
     # 先做原文 + 译文校对
     issues, warns = check_pre(src, mode)
-    regions = _load(os.path.join(src, 'regions.json'))
-    cfg = _load(os.path.join(src, 'config.json'))
+    regions = _load(os.path.join(_dd(src), 'regions.json'))
+    cfg = _load(os.path.join(_dd(src), 'config.json'))
     use_lama = lama or bool(cfg.get('lama'))
     out_dir = os.path.join(src, 'out_lama' if use_lama else 'out')
 
@@ -261,7 +266,7 @@ def check_post(src, lama, mode='both'):
     if unchanged:
         issues.append(("error", f"{len(unchanged)} 页有标框但输出几乎没变化(可能没嵌上): {unchanged[:8]}"))
 
-    trans = _load(os.path.join(src, 'trans.json'))
+    trans = _load(os.path.join(_dd(src), 'trans.json'))
     has_trans = [p for p in pages if any(str(x).strip() for x in (trans.get(p) or []))]
     if has_trans and not unchanged:
         warns.append(f"{len(has_trans)} 页有译文,输出均已变化")
@@ -295,8 +300,8 @@ def main():
                "issues": len(issues), "warns": len(warns)}
     try:
         # 结构化报告:缺译文/结构问题,供 DSH 接管
-        _reg = _load(os.path.join(src, 'regions.json'))
-        _tr = _load(os.path.join(src, 'trans.json'))
+        _reg = _load(os.path.join(_dd(src), 'regions.json'))
+        _tr = _load(os.path.join(_dd(src), 'trans.json'))
         _missing = {}
         for _pg, _bs in _reg.items():
             _row = _tr.get(_pg) or []
@@ -315,7 +320,7 @@ def main():
         if _missing:
             print('  [报告] 有框缺译文: %d 页 / %d 框(见 proofread_report.json)'
                   % (len(_missing), _rep['missing_total']), flush=True)
-        _struct = structural_checks(src, _reg, _load(os.path.join(src, 'ocr_text.json')))
+        _struct = structural_checks(src, _reg, _load(os.path.join(_dd(src), 'ocr_text.json')))
         if _struct:
             print('  [提示] 结构性疑点 %d 条:' % len(_struct), flush=True)
             for _m in _struct[:40]:

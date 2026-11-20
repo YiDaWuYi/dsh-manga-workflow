@@ -9,6 +9,11 @@ import numpy as np
 from PIL import Image
 
 
+def _dd(p):
+    """工作数据目录:项目库模式由 MANGA_DATA_DIR 指定(源目录只读),否则退回源目录。"""
+    return os.environ.get('MANGA_DATA_DIR') or p
+
+
 def is_blank_crop(crop, std_thr=2.0, ink_thr=0.003):
     """判断裁剪是否“空白”(几乎没有墨迹)。
 
@@ -34,12 +39,12 @@ def main():
     else:
         lang = 'ja'
         try:
-            cfg = json.load(open(os.path.join(src, 'config.json'), encoding='utf-8'))
+            cfg = json.load(open(os.path.join(_dd(src), 'config.json'), encoding='utf-8'))
             lang = cfg.get('lang', 'ja')
         except Exception:
             pass
 
-    regions_file = os.path.join(src, 'regions.json')
+    regions_file = os.path.join(_dd(src), 'regions.json')
     regions = json.load(open(regions_file, encoding='utf-8'))
 
     only_page = None
@@ -58,7 +63,7 @@ def main():
         def rec(c):
             return ' '.join(r.readtext(np.array(c), detail=0))
 
-    out = os.path.join(src, 'ocr_text.json')
+    out = os.path.join(_dd(src), 'ocr_text.json')
     # 始终合并已有结果:本次没处理的页(无框/被跳过)不会丢 OCR
     result = {}
     if os.path.exists(out):
@@ -100,7 +105,7 @@ def main():
         print(f'进度 {pi}/{len(pages)}  第{page}页  识别{len(lst)}框'
               + (f'(跳过空白 {blanks})' if blanks else ''), flush=True)
 
-    out = os.path.join(src, 'ocr_text.json')
+    out = os.path.join(_dd(src), 'ocr_text.json')
     json.dump(result, open(out, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
     print(f'OCR 完成: {len(result)} 页 / {total_boxes} 框 -> {out} (语言: {lang})', flush=True)
 

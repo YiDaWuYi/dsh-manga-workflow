@@ -18,6 +18,11 @@ import sys
 import time
 import urllib.request
 
+
+def _dd(p):
+    """工作数据目录:项目库模式由 MANGA_DATA_DIR 指定(源目录只读),否则退回源目录。"""
+    return os.environ.get('MANGA_DATA_DIR') or p
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 CFG_FILE = os.path.join(HERE, '_ocr_cfg.json')
 DEFAULT_CFG = {'mode': 'empty', 'minChars': 1, 'maxPerBook': 30,
@@ -245,9 +250,9 @@ def main():
     if '--dry-run' in args:
         dry = True
 
-    regions = load_json(os.path.join(folder, 'regions.json'), {})
-    ocr = load_json(os.path.join(folder, 'ocr_text.json'), {})
-    book_cfg = load_json(os.path.join(folder, 'config.json'), {})
+    regions = load_json(os.path.join(_dd(folder), 'regions.json'), {})
+    ocr = load_json(os.path.join(_dd(folder), 'ocr_text.json'), {})
+    book_cfg = load_json(os.path.join(_dd(folder), 'config.json'), {})
     if isinstance(book_cfg, dict) and book_cfg.get('lang'):
         lang = book_cfg['lang']
 
@@ -374,7 +379,7 @@ def main():
 
     if fixed:
         # 先备份原始 OCR,便于回滚
-        src = os.path.join(folder, 'ocr_text.json')
+        src = os.path.join(_dd(folder), 'ocr_text.json')
         if os.path.exists(src):
             try:
                 with open(src, 'rb') as f:

@@ -2,8 +2,9 @@
  * Host half of the manga workbench: serves /manga-desk/* routes used by the
  * sidebar panel and runs the local workflow scripts on request.
  */
-import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, statSync, unlinkSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, statSync, unlinkSync, copyFileSync } from 'node:fs'
 import { spawn, execFileSync } from 'node:child_process'
+import { ensureProject, findProject, ensureDoneDir, listProjects, touchProject, projectsRoot, doneRoot } from './project.js'
 import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -482,6 +483,30 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
     }
   }
 
+  // ---------- 项目库:源目录只读,工作数据放工作区 ----------
+  function wsDir() {
+    try { return String(readUiSettings().workspaceDir || '').trim() } catch (e) { return '' }
+  }
+
+  // 取(必要时创建)这本书的项目目录;没设置工作区时抛 PROJECT_NO_WORKSPACE
+  function projDir(folder) {
+    const p = ensureProject(wsDir(), folder)
+    try { touchProject(p) } catch (e) { /* ignore */ }
+    return p.dir
+  }
+
+  function projInfo(folder) {
+    try {
+      const p = ensureProject(wsDir(), folder)
+      return {
+        ok: true, name: p.name, dir: p.dir, workspace: p.workspace,
+        doneDir: ensureDoneDir(p), isNew: p.isNew, migrated: p.migrated,
+      }
+    } catch (e) {
+      return { ok: false, code: e.code || 'PROJECT_ERROR', error: String((e && e.message) || e) }
+    }
+  }
+
   function infra(workRoot) {
     const py = pickPython()
     const deps = checkDeps(py.path)
@@ -570,12 +595,18 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
     if (existsSync(pyw)) py = pyw
     const args = [toolPy]
     if (folder && existsSync(folder)) args.push(folder)
+    // 桌面工具也走项目库:通过 MANGA_DATA_DIR 告诉它数据(框/译文/成品)放在哪
+    let dataDir = ''
+    try { dataDir = projDir(folder) } catch (e) { dataDir = '' }
+    const childEnv = { ...process.env }
+    if (dataDir) childEnv.MANGA_DATA_DIR = dataDir
     try {
       const child = spawn(py, args, {
         cwd: scriptsRoot,
         detached: true,
         stdio: 'ignore',
         windowsHide: false,
+        env: childEnv,
       })
       child.unref()
       return { ok: true, pid: child.pid, python: py, target: folder || '' }
@@ -586,9 +617,10 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
 
   async function status(folder) {
     const pages = listPages(folder)
-    const regions = loadJson(path.join(folder, 'regions.json'))
-    const ocr = loadJson(path.join(folder, 'ocr_text.json'))
-    const trans = loadJson(path.join(folder, 'trans.json'))
+    const pd = projDir(folder)
+    const regions = loadJson(path.join(pd, 'regions.json'))
+    const ocr = loadJson(path.join(pd, 'ocr_text.json'))
+    const trans = loadJson(path.join(pd, 'trans.json'))
     let boxes = 0
     let sfx = 0
     let translated = 0
@@ -696,9 +728,10 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
     const route = await pickDshRoute()
     if (!route) throw new Error('没有找到可用的 DSH 模型')
     if (onData) onData(`[DSH 翻译] 使用模型:${route.provider} / ${route.model}\n`)
-    const regions = loadJson(path.join(folder, 'regions.json'))
-    const ocr = loadJson(path.join(folder, 'ocr_text.json'))
-    const transFile = path.join(folder, 'trans.json')
+    const _pd = projDir(folder)
+    const regions = loadJson(path.join(_pd, 'regions.json'))
+    const ocr = loadJson(path.join(_pd, 'ocr_text.json'))
+    const transFile = path.join(_pd, 'trans.json')
     const trans = loadJson(transFile)
     const pages = onlyPage ? [onlyPage] : Object.keys(regions).filter((p) => (regions[p] || []).length)
     let done = 0
@@ -808,7 +841,8 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
   }
 
   async function runStep(folder, step, onData, jobId) {
-    const env = { ...runtimeEnv, MANGA_ENV_DIR: envDirCfg() }
+    const pd = projDir(folder)   // 项目数据目录(框/译文/成品都在这里)
+    const env = { ...runtimeEnv, MANGA_ENV_DIR: envDirCfg(), MANGA_DATA_DIR: pd }
     let args = null
     let label = step
     if (step === 'ocr') {
@@ -847,7 +881,8 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
     } else if (step === 'proofread') {
       args = [scriptPath('proofread.py'), folder, '--stage', 'pre', '--mode', config.proofMode || 'both']
     } else if (step === 'embed') {
-      args = [scriptPath('embed_regions.py'), folder]
+      args = [scriptPath('embed_regions.py'), folder,
+              path.join(pd, 'regions.json'), path.join(pd, 'trans.json'), path.join(pd, 'out_lama')]
       if (config.lama) args.push('--lama')
     } else if (step === 'bench') {
       args = [toolPath('bench.py'), folder, '--tools', scriptsDir]
@@ -864,7 +899,7 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
     // 嵌字完成后写一份报告(便于在对话里汇报/回看)
     if (step === 'embed') {
       try {
-        const repDir = path.join(folder, 'out')
+        const repDir = path.join(pd, 'out')
         mkdirSync(repDir, { recursive: true })
         const rep = path.join(repDir, 'embed_report.md')
         const tail = String(out || '').slice(-4000)
@@ -891,6 +926,30 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
             out += '[工作区] ' + dst + '\n'
           }
         } catch (e) { /* 忽略 */ }
+        // 成品输出到 <工作区>/已完成/<书名>/(自动创建)
+        if (code === 0) {
+          try {
+            const pj = ensureProject(wsDir(), folder)
+            const done = ensureDoneDir(pj)
+            const srcDir = path.join(pd, 'out_lama')
+            mkdirSync(done, { recursive: true })
+            let copied = 0
+            if (existsSync(srcDir)) {
+              for (const f of readdirSync(srcDir)) {
+                if (!/\.(png|jpg|jpeg|webp)$/i.test(f)) continue
+                copyFileSync(path.join(srcDir, f), path.join(done, f))
+                copied++
+              }
+            }
+            for (const md of ['README.md', 'readme.md']) {
+              const rm = path.join(folder, md)
+              if (existsSync(rm)) { copyFileSync(rm, path.join(done, md)); break }
+            }
+            out += `\n[成品] ${done}（${copied} 页）\n`
+          } catch (e) {
+            out += `\n[成品] 输出失败：${String((e && e.message) || e)}\n`
+          }
+        }
       } catch (e) { /* 报告失败不影响嵌字 */ }
     }
 
@@ -1299,17 +1358,32 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
       return json(res, 200, { pending: !!d.folder, folder: d.folder || '' })
     }
 
+    // 项目信息:GET project?folder= → 项目名/数据目录/成品目录(会按需创建并自动导入旧数据)
+    if (name === 'project') {
+      const f = url.searchParams.get('folder') || folder
+      if (!f || !existsSync(f)) return json(res, 400, { ok: false, error: '文件夹不存在' })
+      const info = projInfo(f)
+      if (!info.ok) return json(res, 200, info)
+      let projects = []
+      try { projects = listProjects(wsDir()) } catch (e) { projects = [] }
+      return json(res, 200, { ...info, workspace: wsDir(), doneRoot: doneRoot(wsDir()), projectsRoot: projectsRoot(wsDir()) })
+    }
+
     // 嵌字预览:GET preview?folder=&page= → 输出图(out/out_lama/preview),没有则回退原图
     if (name === 'preview') {
       const folder = url.searchParams.get('folder') || ''
       const page = url.searchParams.get('page') || ''
       if (!folder || !page || !existsSync(folder)) return json(res, 400, { error: '参数错误' })
       const exts = ['.png', '.webp', '.jpg', '.jpeg']
-      const dirs = ['out', 'out_lama', 'preview', '']
+      let _pdp = ''
+      try { _pdp = projDir(folder) } catch (e) { _pdp = '' }
+      const dirs = _pdp
+        ? [path.join(_pdp, 'out_lama'), path.join(_pdp, 'out'), path.join(_pdp, 'preview'), folder]
+        : ['out', 'out_lama', 'preview', '']
       let found = null
       for (const d of dirs) {
         for (const ext of exts) {
-          const f = path.join(folder, d, page + ext)
+          const f = _pdp ? path.join(d, page + ext) : path.join(folder, d, page + ext)
           if (existsSync(f)) { found = f; break }
         }
         if (found) break
@@ -1379,8 +1453,9 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
       try { body = JSON.parse(raw || '{}') } catch {}
       const dir = body.folder || folder
       if (!dir || !existsSync(dir)) return json(res, 400, { ok: false, error: '文件夹不存在' })
-      const reg = loadJson(path.join(dir, 'regions.json')) || {}
-      const tr = loadJson(path.join(dir, 'trans.json')) || {}
+      const _pd5 = projDir(dir)
+      const reg = loadJson(path.join(_pd5, 'regions.json')) || {}
+      const tr = loadJson(path.join(_pd5, 'trans.json')) || {}
       const scope = body.scope === 'all' ? 'all' : 'sfx'
       const pages = body.page ? [body.page] : Object.keys(reg)
       let boxes = 0, pagesHit = 0, todo = 0
@@ -1421,8 +1496,9 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
     }
 
     function markSfxParticipate(dir, page, onlySfx) {
-      const regF = path.join(dir, 'regions.json')
-      const trF = path.join(dir, 'trans.json')
+      const _pd6 = projDir(dir)
+      const regF = path.join(_pd6, 'regions.json')
+      const trF = path.join(_pd6, 'trans.json')
       const reg = loadJson(regF) || {}
       const tr = loadJson(trF) || {}
       let n = 0
@@ -1451,7 +1527,7 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
       const job = { id, step: 'dsh-sfx', folder: dir, status: 'running', code: null, log: '', started: Date.now() }
       jobs.set(id, job)
       ;(async () => {
-        const env = { ...runtimeEnv, MANGA_ENV_DIR: envDirCfg() }
+        const env = { ...runtimeEnv, MANGA_ENV_DIR: envDirCfg(), MANGA_DATA_DIR: projDir(dir) }
         const args = [scriptPath('ocr_fallback.py'), dir, '--mode', 'sfx', '--force',
                       '--short-auto', '0']
         if (body.page) args.push('--page', body.page)
@@ -1491,9 +1567,9 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
       const job = { id, step: 'dsh-full', folder: dir, status: 'running', code: null, log: '', started: Date.now() }
       jobs.set(id, job)
       ;(async () => {
-        const env = { ...runtimeEnv, MANGA_ENV_DIR: envDirCfg() }
+        const env = { ...runtimeEnv, MANGA_ENV_DIR: envDirCfg(), MANGA_DATA_DIR: projDir(dir) }
         setProgress(job, 1, '准备')
-        const regAll = loadJson(path.join(dir, 'regions.json')) || {}
+        const regAll = loadJson(path.join(projDir(dir), 'regions.json')) || {}
         const totalPages = Object.keys(regAll).filter((k) => (regAll[k] || []).length).length
         job.log += '[DSH 汉化] 1/4 视觉识别整本(' + totalPages + ' 页)…\n'
         const r1 = await runProcess(pythonPath,
@@ -1544,7 +1620,7 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
       const args2 = [scriptPath('preflight.py'), dir]
       if (body.page) args2.push('--page', body.page)
       if (body.autoParticipate) args2.push('--auto-participate')
-      const env2 = { ...runtimeEnv, MANGA_ENV_DIR: envDirCfg() }
+      const env2 = { ...runtimeEnv, MANGA_ENV_DIR: envDirCfg(), MANGA_DATA_DIR: projDir(dir) }
       const rr = await runProcess(pythonPath, args2, env2)
       let out2 = {}
       for (const ln of String(rr.out || '').split('\n')) {
@@ -1683,7 +1759,7 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
                     log: '', started: Date.now() }
       jobs.set(id, job)
       ;(async () => {
-        const env = { ...runtimeEnv, MANGA_ENV_DIR: envDirCfg() }
+        const env = { ...runtimeEnv, MANGA_ENV_DIR: envDirCfg(), MANGA_DATA_DIR: projDir(dir) }
         const fb = scriptPath('ocr_fallback.py')
         const args = [fb, dir, '--mode', 'all', '--force', '--page', page, '--short-auto', '0']
         if (config.lang) args.push('--lang', config.lang)
@@ -1873,9 +1949,10 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
 
     if (name === 'regions') {
       const page = url.searchParams.get('page') || ''
-      const regions = loadJson(path.join(folder, 'regions.json'))
-      const ocr = loadJson(path.join(folder, 'ocr_text.json'))
-      const trans = loadJson(path.join(folder, 'trans.json'))
+      const _pd8 = projDir(folder)
+      const regions = loadJson(path.join(_pd8, 'regions.json'))
+      const ocr = loadJson(path.join(_pd8, 'ocr_text.json'))
+      const trans = loadJson(path.join(_pd8, 'trans.json'))
       return json(res, 200, {
         boxes: Array.isArray(regions[page]) ? regions[page] : [],
         texts: Array.isArray(ocr[page]) ? ocr[page] : [],
@@ -1896,7 +1973,7 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
       const target = body.folder || folder
       if (!page) return json(res, 400, { error: '缺少 page' })
       if (!target || !existsSync(target)) return json(res, 400, { error: '文件夹不存在' })
-      const rf = path.join(target, 'regions.json')
+      const rf = path.join(projDir(target), 'regions.json')
       const regions = loadJson(rf)
       regions[page] = Array.isArray(body.boxes) ? body.boxes : []
       writeFileSync(rf, JSON.stringify(regions, null, 1), 'utf8')

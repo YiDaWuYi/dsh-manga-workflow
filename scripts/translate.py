@@ -10,6 +10,11 @@
 import sys, os, json, time, urllib.parse, urllib.request, ssl
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+
+def _dd(p):
+    """工作数据目录:项目库模式由 MANGA_DATA_DIR 指定(源目录只读),否则退回源目录。"""
+    return os.environ.get('MANGA_DATA_DIR') or p
+
 EXTS = ('.webp', '.png', '.jpg', '.jpeg', '.bmp')
 UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36'
 
@@ -264,16 +269,16 @@ def main():
         sl = sys.argv[sys.argv.index('--from') + 1]
     else:
         try:
-            sl = _load(os.path.join(src, 'config.json')).get('lang', 'ja')
+            sl = _load(os.path.join(_dd(src), 'config.json')).get('lang', 'ja')
         except Exception:
             sl = 'ja'
 
     overwrite = '--overwrite' in sys.argv
-    ocr = _load(os.path.join(src, 'ocr_text.json'))
+    ocr = _load(os.path.join(_dd(src), 'ocr_text.json'))
     if not ocr:
         print('缺少 ocr_text.json,请先运行自动识别')
         return 2
-    trans_file = os.path.join(src, 'trans.json')
+    trans_file = os.path.join(_dd(src), 'trans.json')
     trans = _load(trans_file)
     pages = [only_page] if (only_page and only_page in ocr) else (
         [] if only_page else sorted(ocr.keys()))

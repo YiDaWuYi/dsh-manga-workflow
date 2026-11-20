@@ -4,3 +4,4 @@ node_modules/
 CON
 __pycache__/
 *.pyc
+_lama_io/
