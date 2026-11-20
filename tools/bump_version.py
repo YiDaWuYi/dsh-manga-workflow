@@ -180,6 +180,9 @@ def do_pack():
     items = ['package.json', 'index.js', 'client.js', 'cordis.patch.yml', 'README.md',
              'CHANGELOG.md', 'RELEASING.md', 'LICENSE', 'icon.svg', 'assets', 'locale',
              'docs', 'scripts', 'src']
+    # 开发用脚本:不随包发布
+    SKIP = {'_test_detect.py', 'clean_regions.py', 'crop_regions.py', 'gen_bat.py',
+            'make_trans_template.py', 'run_auto_bench.py', 'run_auto_bench2.py'}
     with tarfile.open(tgz, 'w:gz') as tf:
         for name in items:
             p = os.path.join(ROOT, name)
@@ -190,7 +193,7 @@ def do_pack():
             if os.path.isdir(p):
                 for base, _dirs, files in os.walk(p):
                     for f in files:
-                        if '__pycache__' in base:
+                        if '__pycache__' in base or f in SKIP:
                             continue
                         full = os.path.join(base, f)
                         rel = os.path.relpath(full, ROOT)
