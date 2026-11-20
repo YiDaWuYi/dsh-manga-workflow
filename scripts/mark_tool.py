@@ -575,7 +575,8 @@ class MarkTool:
         self.sfx.set(k == 'plain')
         self._syncing = True
         try:
-            self.cover.set(self._cover_mem.get(k, 'erase' if k == 'plain' else 'cover'))
+            self.cover.set('overlay' if k == 'plain'
+                           else self._cover_mem.get(k, 'cover'))
             self.gpu.set(bool(self._gpu_mem.get(k, False)))
         finally:
             self._syncing = False
@@ -587,9 +588,13 @@ class MarkTool:
             for w in self._cover_frame.winfo_children():
                 w.destroy()
             tk.Label(self._cover_frame, text="原文处理:", fg='#2a5d8f').pack(side=tk.LEFT)
+            _plain = (self.kind.get() == 'plain')
             for val, txt in (('overlay', '译文直盖'), ('erase', '抹除'), ('cover', '色块覆盖')):
-                tk.Radiobutton(self._cover_frame, text=txt, variable=self.cover, value=val,
-                               command=self._on_cover_change).pack(side=tk.LEFT)
+                rb = tk.Radiobutton(self._cover_frame, text=txt, variable=self.cover, value=val,
+                                    command=self._on_cover_change)
+                if _plain and val == 'cover':
+                    rb.config(state='disabled')   # 拟声词不允许色块覆盖
+                rb.pack(side=tk.LEFT)
             self._gpu_chk = tk.Checkbutton(self._cover_frame, text="GPU去字", variable=self.gpu)
             self._on_cover_change()
         except Exception:
@@ -598,7 +603,15 @@ class MarkTool:
     def _on_cover_change(self, *_):
         """只有选「抹除」时才显示 GPU 去字;并记住该类型的选择。"""
         k = self.kind.get()
-        self._cover_mem[k] = self.cover.get()
+        if k == 'plain':
+            # 拟声词:默认直盖,不记忆覆盖方式
+            try:
+                if self.cover.get() != 'overlay':
+                    self.cover.set('overlay')
+            except Exception:
+                pass
+        else:
+            self._cover_mem[k] = self.cover.get()
         self._gpu_mem[k] = bool(self.gpu.get())
         # GPU 勾选框的显隐:仅「抹除」时出现
         try:
@@ -2754,7 +2767,7 @@ def _style_preview_photo(style_id, w=54, h=30, font=''):
 
 
 # ---------------- 版本 ----------------
-APP_VERSION = 'V1.13.4'
+APP_VERSION = 'V1.14'
 
 # ---------------- 帮助窗口(程序内渲染,不依赖 .md 文件关联)----------------
 

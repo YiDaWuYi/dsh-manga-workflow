@@ -84,6 +84,11 @@ def cover_mode(box):
     旧数据保持原行为:erase=False→直盖;否则抹除;上一版 'keep' 视作直盖。
     """
     b = box or {}
+    # 拟声词:不允许色块覆盖(会挡住画面/网点)→ 降级为直盖;抹除仍可用
+    if kind_of(b) == 'plain':
+        if b.get('cover') == 'erase':
+            return 'erase'
+        return 'overlay'
     m = b.get('cover')
     if m == 'keep':
         return 'overlay'

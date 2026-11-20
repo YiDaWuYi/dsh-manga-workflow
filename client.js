@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-manga-workflow',
   factory(require) {
   // 版本号(发布时同步 package.json / 桌面端 mark_tool.py)
-  const APP_VERSION = 'V1.14';
+  const APP_VERSION = 'V1.14.1';
 
     const React = require('react');
     const h = React.createElement;
@@ -192,6 +192,7 @@ window.__ModuleLoader__.load({
       return 'body';
     };
     const coverOfBox = (b) => {
+      if (kindOfBox(b) === 'plain') return 'overlay';   // 拟声词:不使用色块覆盖
       const m = b && b.cover;
       if (m === 'keep') return 'overlay';
       if (m === 'overlay' || m === 'erase' || m === 'cover') return m;
@@ -639,7 +640,7 @@ window.__ModuleLoader__.load({
       const TIPS = [
         '【强烈建议】',
         '1. 拟声词不要用「抹除+GPU」:拟声词大多压在画面、网点、线条上,LaMa 修复会把画面糊成一片,',
-        '   效果普遍很差;拟声词建议用「译文直盖」,或按画面情况用「色块覆盖」。',
+        '   效果普遍很差;拟声词固定用「译文直盖」(色块覆盖对拟声不可选)。',
         '2. 翻译请接入 API(设置 → 视觉引擎里配的 Kimi / DeepSeek 等会自动优先用于翻译);',
         '   免费渠道(Google / MyMemory)质量明显差,常出现错译、音译乱翻、标点错乱。',
       ];
@@ -753,12 +754,12 @@ window.__ModuleLoader__.load({
           h(HelpLines, {
             lines: [
               '【类型】正文(绿框) / 无框正文·拟声词(红虚线框) / 标题(蓝框,嵌字居中加粗)',
-              '【原文处理】译文直盖 / 抹除 / 色块覆盖;选「抹除」时下方出现「GPU去字」勾选(按框记录)',
+              '【原文处理】译文直盖 / 抹除 / 色块覆盖(拟声词无「色块覆盖」,固定直盖或抹除);选「抹除」时下方出现「GPU去字」勾选(按框记录)',
               '【框外标注】左上角=类型,右上角=原文处理(直盖/覆盖/抹除·GPU/抹除·普通)',
               '【点选编辑】单击框=选中(黄框),改类型/处理/GPU/方向/字号/样式会立即写回该框',
               '【记忆】每种类型各自记住上次的原文处理/GPU,切换类型自动恢复(仅本次页面会话)',
               '【方向】自动检测 / 竖排 / 横排;【字号】手动 + 自动字号(拟声放大、正文缩到框内)',
-              '【拟声词默认】译文直盖(不擦原字);要擦除请把处理改成「抹除」',
+              '【拟声词】固定「译文直盖」,不记忆、不可选色块覆盖;确实要擦原字请改成「抹除」',
             ],
             style: S.muted,
           }),
@@ -1730,12 +1731,16 @@ h('div', { style: S.row },
       const pickKind = (k) => {
         const m = kindMemRef.current[k] || {};
         setKind(k);
-        setCover(m.cover || KIND_DEFAULT_COVER[k] || 'cover');
+        // 拟声词:默认直盖,不记忆/不恢复覆盖方式
+        setCover(k === 'plain' ? 'overlay' : (m.cover || KIND_DEFAULT_COVER[k] || 'cover'));
         setGpu(!!m.gpu);
       };
       const pickCover = (c) => {
+        if (kind === 'plain' && c === 'cover') return;   // 拟声词色块覆盖不可选
         setCover(c);
-        kindMemRef.current[kind] = { ...(kindMemRef.current[kind] || {}), cover: c, gpu };
+        if (kind !== 'plain') {
+          kindMemRef.current[kind] = { ...(kindMemRef.current[kind] || {}), cover: c, gpu };
+        }
       };
       const pickGpu = (v) => {
         setGpu(v);
@@ -2321,7 +2326,11 @@ h('div', { style: S.row },
           if (k === '2') { pickKind('plain'); return; }
           if (k === '3') { pickKind('title'); return; }
           if (k === 'e' || k === 'E') {
-            pickCover(cover === 'overlay' ? 'erase' : (cover === 'erase' ? 'cover' : 'overlay'));
+            if (kind === 'plain') {
+              pickCover(cover === 'overlay' ? 'erase' : 'overlay');   // 拟声无「覆盖」
+            } else {
+              pickCover(cover === 'overlay' ? 'erase' : (cover === 'erase' ? 'cover' : 'overlay'));
+            }
             return;
           }
           const pages = info ? info.pages : [];
@@ -2651,7 +2660,14 @@ h('div', { style: S.row },
             h('span', { style: { ...S.muted, fontSize: '11px' } }, '原文处理:'),
             [['overlay', '译文直盖'], ['erase', '抹除'], ['cover', '色块覆盖']].map(([c, name]) =>
               h('button', {
-                key: c, type: 'button', style: cover === c ? S.btnOn : S.btn,
+                key: c, type: 'button',
+                style: (kind === 'plain' && c === 'cover')
+                  ? { ...S.btn, opacity: 0.35, cursor: 'not-allowed' }
+                  : (cover === c ? S.btnOn : S.btn),
+                disabled: kind === 'plain' && c === 'cover',
+                title: (kind === 'plain' && c === 'cover')
+                  ? '拟声词不允许色块覆盖(固定直盖,可改抹除)'
+                  : undefined,
                 onClick: () => pickCover(c),
               }, name)),
             cover === 'erase'
