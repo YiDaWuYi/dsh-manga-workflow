@@ -154,7 +154,7 @@ def _fits_horizontal(draw, text, w, h, s, st):
     return len(lines) * (s + 4) <= h + 4
 
 
-def fit_size(draw, text, w, h, start, st, vertical, grow=False):
+def fit_size(draw, text, w, h, start, st, vertical, grow=False, cap_ratio=0.9, lo=None):
     """计算适配框的字号。
 
     grow=False(正文/标题):从小往大靠 start,放不下就缩小,最小 6 号;
@@ -164,7 +164,7 @@ def fit_size(draw, text, w, h, start, st, vertical, grow=False):
     text = text or ''
     start = max(6, int(start or 20))
     lo_s = 18 if grow else 10  # 可读下限:拟声 18(小框也不缩太小),正文/标题 10
-    hi_s = min(140, max(12, int(min(w, h) * 0.9)))
+    hi_s = min(140, max(12, int(min(w, h) * cap_ratio)))
     if grow:
         hi_s = int(min(w, h) * 0.72) if hi_s > 0 else hi_s   # 小框的拟声词也至少能到 28 号(允许溢出盖到框外)
     def fits(s):
@@ -456,16 +456,20 @@ def main():
             else:
                 vertical = True          # 'auto' 且没检测出 → 默认竖排
             if kind == 'title':
-                # 标题:居中 + 加粗 + 自动缩放
+                # 标题:居中 + 加粗 + 自动缩放;按框高给更大的初始字号
+                size = max(int(size or 20), 28, int(h * 0.5))
                 ok = styles.draw_title(draw, zh, r, size, st)
             else:
                 # 字号自适应:
                 #   正文 → 超框自动缩小;拟声词 → 自动放大到接近填满框(提升可读性)
-                grow = (kind == 'plain') and AutoSizeOn
-                new_size, bad = fit_size(draw, zh, w, h, size, st, vertical, grow=grow)
+                is_body = (kind == 'body')
+                grow = (kind == 'plain' or is_body) and AutoSizeOn
+                _cap = 0.55 if is_body else 0.9
+                _lo = 14 if is_body else 18
+                new_size, bad = fit_size(draw, zh, w, h, size, st, vertical, grow=grow, cap_ratio=_cap, lo=_lo)
                 # 当前方向怎么都放不下 → 试另一方向(竖排↔横排),哪个放得下用哪个
                 if bad:
-                    alt_size, alt_bad = fit_size(draw, zh, w, h, size, st, not vertical, grow=grow)
+                    alt_size, alt_bad = fit_size(draw, zh, w, h, size, st, not vertical, grow=grow, cap_ratio=_cap, lo=_lo)
                     if not alt_bad or alt_size > new_size:
                         vertical = not vertical
                         new_size, bad = alt_size, alt_bad
@@ -487,7 +491,7 @@ def main():
                     # 否则小框里的拟声词会一直卡在下限字号,看起来特别小。
                     try:
                         s2, bad2 = fit_size(draw, zh, ew, eh, max(lo_s, int(r.get('size', 20) or 20)),
-                                            st, vertical, grow=grow)
+                                            st, vertical, grow=grow, cap_ratio=_cap, lo=_lo)
                         if s2 > size:
                             size = s2
                         cap = int(min(ew, eh) * 0.55)

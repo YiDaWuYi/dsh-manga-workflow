@@ -66,8 +66,14 @@ def main():
     auto_skip = 0
     unified_total = 0
 
+    auto_cleared = 0
     for pg in pages:
         boxes = reg.get(pg) or []
+        _tr0 = tr.get(pg) if isinstance(tr.get(pg), list) else []
+        for _i, _b in enumerate(boxes):
+            if _b.get('auto') and _i < len(_tr0) and str(_tr0[_i] or '').strip():
+                _b['auto'] = False      # 已有译文 → 视为已确认,参与嵌字
+                auto_cleared += 1
         n = len(boxes)
         if not n:
             continue
@@ -160,6 +166,7 @@ def main():
         'auto_skip_added': auto_skip,
         'auto_participate': bool(auto_part),
         'unified_total': unified_total,
+        'auto_cleared': auto_cleared,
     }
     save(os.path.join(folder, 'preflight_report.json'), rep)
     print(json.dumps(rep, ensure_ascii=False))

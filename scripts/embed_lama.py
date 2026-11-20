@@ -155,19 +155,26 @@ def main():
             vertical = _v if isinstance(_v, bool) else bool(rr.get('vertical', True))
             kind = styles.kind_of(rr)
             if kind == 'title':
-                styles.draw_title(draw, zh, rr, size, st)
+                # 标题:按框高放大(标题框通常很高),再由 draw_title 按宽自动缩
+                sizes = max(int(size or 20), 28, int(h * 0.5))
+                styles.draw_title(draw, zh, rr, sizes, st)
             else:
                 # 与 embed_regions 一致:可读下限 + 放不下时允许局部溢出并重算字号
-                grow = (kind == 'plain') and AUTO_SIZE
+                is_body = (kind == 'body')
+                grow = (kind == 'plain' or is_body) and AUTO_SIZE
+                _cap = 0.55 if is_body else 0.9
+                _lo = 14 if is_body else 18
                 base_sz = int(size or 20)
-                s_fit, bad = fit_size(draw, zh, w, h, base_sz, st, vertical, grow=grow)
+                s_fit, bad = fit_size(draw, zh, w, h, base_sz, st, vertical, grow=grow,
+                                      cap_ratio=_cap, lo=_lo)
                 if bad:
-                    lo = 18 if grow else 10
+                    lo = _lo
                     ew, eh = ((int(w * 1.22), int(h * 1.12)) if grow
                               else (int(w * 1.12), int(h * 1.08)))
                     ex = max(0, x - (ew - w) // 2)
                     ey = max(0, y - (eh - h) // 2)
-                    s2, _ = fit_size(draw, zh, ew, eh, max(lo, base_sz), st, vertical, grow=grow)
+                    s2, _ = fit_size(draw, zh, ew, eh, max(lo, base_sz), st, vertical, grow=grow,
+                                      cap_ratio=_cap, lo=_lo)
                     s_fit = max(s_fit, s2, lo)
                     cap = int(min(ew, eh) * 0.55)
                     if cap > 8:
