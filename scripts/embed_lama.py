@@ -83,7 +83,7 @@ def main():
     if r.returncode != 0:
         print(r.stderr[-800:])
 
-    out_dir = os.path.join(src, 'preview_lama' if preview else 'out_lama')
+    out_dir = os.path.join(_dd(src), 'preview_lama' if preview else 'out_lama')
     os.makedirs(out_dir, exist_ok=True)
     n = 0
     for page in pages:

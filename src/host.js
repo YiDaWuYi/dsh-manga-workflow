@@ -2,7 +2,7 @@
  * Host half of the manga workbench: serves /manga-desk/* routes used by the
  * sidebar panel and runs the local workflow scripts on request.
  */
-import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, statSync, unlinkSync, copyFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, statSync, unlinkSync, copyFileSync, rmSync } from 'node:fs'
 import { spawn, execFileSync } from 'node:child_process'
 import { ensureProject, findProject, ensureDoneDir, listProjects, touchProject, projectsRoot, doneRoot } from './project.js'
 import path from 'node:path'
@@ -425,7 +425,29 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
     const merged = { ...base, ...next }
     mkdirSync(path.dirname(file), { recursive: true })
     writeFileSync(file, JSON.stringify(merged, null, 2), 'utf8')
+    try { ensureWorkspaceGuide(next.workspaceDir) } catch (e) { /* 忽略 */ }
     return next
+  }
+
+
+  // ---------- 工作区接管说明(给新 DSH 会话看的文件) ----------
+  const WORKSPACE_GUIDE_NAME = 'DSH-接管说明.md'
+  const workspaceGuideSource = () => fileURLToPath(new URL('../docs/workspace-guide.md', import.meta.url))
+  // 生成/刷新 <工作区>\DSH-接管说明.md;返回路径(失败返回空串)
+  function ensureWorkspaceGuide(ws) {
+    try {
+      const dir = String(ws || '').trim()
+      if (!dir || !existsSync(dir)) return ''
+      const src = workspaceGuideSource()
+      if (!existsSync(src)) return ''
+      const dst = path.join(dir, WORKSPACE_GUIDE_NAME)
+      const body = readFileSync(src, 'utf8')
+      if (existsSync(dst)) {
+        try { if (readFileSync(dst, 'utf8') === body) return dst } catch (e) { /* 覆盖 */ }
+      }
+      writeFileSync(dst, body, 'utf8')
+      return dst
+    } catch (e) { return '' }
   }
 
   // ---------- 设置:识图用的视觉模型(modlens 的 ~/.modlens/config.json) ----------
@@ -1100,6 +1122,82 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
       }
     }
 
+    // ---------- 缓存 / 模型管理 ----------
+    const cacheRoot = () => {
+      try { return path.dirname(String(runtimeEnv.TORCH_HOME || '')) } catch { return '' }
+    }
+    function dirSizeMB(dir) {
+      let total = 0
+      const walk = (p) => {
+        let st
+        try { st = statSync(p) } catch { return }
+        if (st.isDirectory()) {
+          let names = []
+          try { names = readdirSync(p) } catch { names = [] }
+          for (const n of names) walk(path.join(p, n))
+        } else {
+          total += st.size
+        }
+      }
+      walk(dir)
+      return Math.round(total / (1024 * 1024) * 10) / 10
+    }
+    function cacheItems() {
+      const root = cacheRoot()
+      const items = [
+        { key: 'lama_io', label: '嵌字临时文件(_lama_io)', kind: 'cache', dir: path.join(root, '_lama_io') },
+        { key: 'preview', label: '工作区预览缓存', kind: 'cache', dir: path.join(root, 'projects') },
+        { key: 'torch', label: 'PyTorch / LaMa 模型', kind: 'model', dir: String(runtimeEnv.TORCH_HOME || '') },
+        { key: 'hf', label: 'HuggingFace 模型', kind: 'model', dir: String(runtimeEnv.HF_HOME || '') },
+        { key: 'easyocr', label: 'EasyOCR 模型', kind: 'model', dir: String(runtimeEnv.EASYOCR_MODULE_PATH || '') },
+      ]
+      const out = []
+      for (const it of items) {
+        if (!it.dir) continue
+        let exists = false
+        try { exists = existsSync(it.dir) } catch { exists = false }
+        if (!exists) continue
+        out.push({ key: it.key, label: it.label, kind: it.kind, dir: it.dir, sizeMB: dirSizeMB(it.dir) })
+      }
+      return out
+    }
+
+    if (name === 'cache/info') {
+      let items = []
+      try { items = cacheItems() } catch (e) { return json(res, 500, { ok: false, error: String(e) }) }
+      return json(res, 200, {
+        ok: true, base: cacheRoot(), items,
+        totalMB: Math.round(items.reduce((a, b) => a + b.sizeMB, 0) * 10) / 10,
+      })
+    }
+
+    if ((name === 'cache/clear' || name === 'cache/clear-models') && req.method === 'POST') {
+      const raw = await readBody(req)
+      let body = {}
+      try { body = JSON.parse(raw) } catch { return json(res, 400, { ok: false, error: '无效 JSON' }) }
+      const wanted = Array.isArray(body.keys) ? body.keys.map(String) : []
+      const onlyModels = name === 'cache/clear-models'
+      let items = []
+      try { items = cacheItems() } catch (e) { return json(res, 500, { ok: false, error: String(e) }) }
+      const targets = items.filter((it) => (onlyModels ? it.kind === 'model' : it.kind === 'cache')
+        && wanted.includes(it.key))
+      if (!targets.length) return json(res, 400, { ok: false, error: '没有选中可删除的项' })
+      const done = []
+      let freed = 0
+      for (const it of targets) {
+        const before = it.sizeMB
+        try {
+          rmSync(it.dir, { recursive: true, force: true })
+          mkdirSync(it.dir, { recursive: true })
+          done.push({ key: it.key, label: it.label, sizeMB: before })
+          freed += before
+        } catch (e) {
+          return json(res, 500, { ok: false, error: `删除 ${it.label} 失败: ${String(e && e.message || e)}`, done })
+        }
+      }
+      return json(res, 200, { ok: true, done, freedMB: Math.round(freed * 10) / 10 })
+    }
+
     if (name === 'settings/ui') {
       if (req.method === 'POST') {
         const raw = await readBody(req)
@@ -1727,7 +1825,8 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
     // 嵌字工作区状态:GET → {dir, exists}
     if (name === 'workspace/status') {
       const dir = String(readUiSettings().workspaceDir || '').trim()
-      return json(res, 200, { dir, exists: !!dir && existsSync(dir) })
+      const guide = dir && existsSync(dir) ? ensureWorkspaceGuide(dir) : ''
+      return json(res, 200, { dir, exists: !!dir && existsSync(dir), guide })
     }
     // 确保工作区存在:POST {dir?} → {ok, dir, existed}
     if (name === 'workspace/ensure' && req.method === 'POST') {
@@ -1739,7 +1838,8 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
       try {
         const existed = existsSync(dir)
         mkdirSync(dir, { recursive: true })
-        return json(res, 200, { ok: true, dir, existed })
+        const guide = ensureWorkspaceGuide(dir)
+        return json(res, 200, { ok: true, dir, existed, guide })
       } catch (e) {
         return json(res, 500, { ok: false, error: String((e && e.message) || e) })
       }

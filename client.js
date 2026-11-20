@@ -9,10 +9,15 @@ window.__ModuleLoader__.load({
   id: 'dsh-manga-workflow',
   factory(require) {
   // 版本号(发布时同步 package.json / 桌面端 mark_tool.py)
-  const APP_VERSION = 'V1.15';
+  const APP_VERSION = 'V1.15.18';
 
     const React = require('react');
     const h = React.createElement;
+    // 工具栏分组分隔线
+    const SEP = () => h('span', {
+      style: { display: 'inline-block', width: '1px', height: '16px',
+               background: 'rgba(255,255,255,0.18)', margin: '0 6px', verticalAlign: 'middle' },
+    });
 
     const PANEL_ID = 'manga-desk';
     const API = '/manga-desk';
@@ -755,7 +760,7 @@ window.__ModuleLoader__.load({
           h(HelpLines, { lines: FAQ, style: S.muted }),
         ),
         h('div', { style: S.box },
-          h('div', { style: boxTitle }, '八·补充、1.10 新标注体系'),
+          h('div', { style: boxTitle }, '八、标注体系(类型 / 原文处理 / 方向)'),
           h(HelpLines, {
             lines: [
               '【类型】正文(绿框) / 无框正文·拟声词(红虚线框) / 标题(蓝框,嵌字居中加粗)',
@@ -770,7 +775,7 @@ window.__ModuleLoader__.load({
           }),
         ),
         h('div', { style: S.box },
-          h('div', { style: boxTitle }, '八·补充0、标准操作流程(照按键顺序做)'),
+          h('div', { style: boxTitle }, '九、标准操作流程(照按键顺序做)'),
           h(HelpLines, {
             lines: [
               '【0】鼠标放到任意按键上,会显示该按键的具体说明(title 提示)。',
@@ -802,7 +807,7 @@ window.__ModuleLoader__.load({
           }),
         ),
         h('div', { style: S.box },
-          h('div', { style: boxTitle }, '八·补充2、DSH 接管模式与花费'),
+          h('div', { style: boxTitle }, '十、DSH 接管模式与花费'),
           h(HelpLines, {
             lines: [
               '【提示】所有按键鼠标悬停会显示具体描述。',
@@ -843,7 +848,7 @@ window.__ModuleLoader__.load({
           }),
         ),
         h('div', { style: S.box },
-          h('div', { style: boxTitle }, '九、文字样式(正文 / 拟声 / 标题 三组)'),
+          h('div', { style: boxTitle }, '十一、文字样式(正文 / 拟声 / 标题 三组)'),
           h(HelpLines, {
             lines: [
               '工作台里有三排样式按钮,按钮上直接画出渲染效果(和最终嵌字一致):',
@@ -857,6 +862,60 @@ window.__ModuleLoader__.load({
               '· 改已有框:「应用到本页」按类型套用本页;「应用到全部」按类型刷全书;',
               '· 「样式 ▾」可收起样式栏,再展开回到原位置;',
               '· 样式表在 manga_tool/styles.json,网页端与桌面端共用同一份。',
+            ],
+            style: S.muted,
+          }),
+        ),
+        h('div', { style: S.box },
+          h('div', { style: boxTitle }, '十二、1.12–1.15 新功能速查'),
+          h(HelpLines, {
+            lines: [
+              '【拟声词】固定「译文直盖」:色块覆盖已移除;需要擦原字就把原文处理改成「抹除」。',
+              '【确认嵌字】体检 → 校对 → 页面内确认 → 嵌字 → 表单+预览;全程显示分阶段进度。',
+              '【auto 参与】本页auto→参与 / 仅补有译文的(推荐) / 全书auto参与 / 体检时auto参与。',
+              '【单页识图翻译】当前页:视觉引擎读原文 → DSH 翻译(付费,按页计费)。',
+              '【拟声词识别填词】本页拟声词:视觉识别 → DSH 翻译 → 自动设为参与嵌字。',
+              '【刷新本页】只重读当前页框与译文并重载图片,不重载 DSH。',
+              '【缓存/模型】设置 → 缓存/模型:查看占用、清理缓存、删除指定模型。',
+              '【版本更新】启动页显示 当前/稳定版/测试版;最新 Release=测试版,前一个=稳定版。',
+            ],
+            style: S.muted,
+          }),
+        ),
+        h('div', { style: S.box },
+          h('div', { style: boxTitle }, '十三、项目库与成品目录'),
+          h(HelpLines, {
+            lines: [
+              '【先设工作区】设置 → 嵌字工作区;然后选任意漫画文件夹开始工作。',
+              '【数据位置】<工作区>/projects/<书名>/ 存 regions.json、trans.json、ocr_text.json、config.json 与 out/out_lama/preview;源目录只读。',
+              '【旧书导入】第一次打开旧书会把书里已有数据导入项目库,书里原文件保留。',
+              '【成品输出】嵌字成功后自动复制 PNG 到 <工作区>/已完成/<书名>/(目录自动创建)。',
+              '【同名书】不同路径的同名书自动加 __2 / __3 区分;再次打开同一本会复用同一项目。',
+              '【DSH 接管说明】设置好工作区后,插件自动在 <工作区>/DSH-接管说明.md 生成说明书(随插件更新刷新);设置页会显示该路径。',
+              '【新对话怎么开头】新开 DSH 对话处理漫画时,第一句说「先读工作区根目录的 DSH-接管说明.md,然后 …」,DSH 就会按里面的流程/目录/规则接手。',
+            ],
+            style: S.muted,
+          }),
+        ),
+        h('div', { style: S.box },
+          h('div', { style: boxTitle }, '十四、缓存与模型管理'),
+          h(HelpLines, {
+            lines: [
+              '设置 → 缓存/模型:显示缓存(_lama_io、preview、projects)与模型(torch/hf/easyocr)占用。',
+              '「清理缓存」只删临时文件,不动模型与项目数据。',
+              '「删除模型…」可勾选删除指定模型;删除后下次使用会自动重新下载。',
+            ],
+            style: S.muted,
+          }),
+        ),
+        h('div', { style: S.box },
+          h('div', { style: boxTitle }, '十五、版本更新(稳定版 / 测试版)'),
+          h(HelpLines, {
+            lines: [
+              '启动页右下显示当前版本与「检查更新」。',
+              '规则:GitHub 最新 Release = 测试版;前一个 Release = 稳定版。',
+              '有新版时出现「更新稳定版」「更新测试版」:下载 .tgz 到 <工作区>/dist/。',
+              '检查结果按天缓存;想立刻重查可在启动页点「检查更新」强制刷新。',
             ],
             style: S.muted,
           }),
@@ -909,6 +968,79 @@ window.__ModuleLoader__.load({
       '保存后如果当前对话里的识图工具还用旧配置,重开一次对话最稳。',
     ];
 
+    /* ---------- 缓存 / 模型管理 ---------- */
+    function CachePanel() {
+      const [items, setItems] = React.useState([]);
+      const [pick, setPick] = React.useState({});
+      const [msg, setMsg] = React.useState('');
+      const [busy, setBusy] = React.useState(false);
+
+      const load = async () => {
+        try {
+          const d = await api('/cache/info');
+          setItems((d && d.items) || []);
+        } catch (e) {
+          setMsg('读取失败:' + String(e.message || e));
+        }
+      };
+      React.useEffect(() => { load(); }, []);
+
+      const caches = items.filter((it) => it.kind === 'cache');
+      const models = items.filter((it) => it.kind === 'model');
+      const totalMB = Math.round(items.reduce((a, b) => a + (b.sizeMB || 0), 0) * 10) / 10;
+
+      const clearCaches = async () => {
+        if (!caches.length) return;
+        setBusy(true);
+        try {
+          const r = await api('/cache/clear', { keys: caches.map((it) => it.key) });
+          setMsg(`已清理缓存,释放 ${r.freedMB} MB`);
+          await load();
+        } catch (e) { setMsg('清理失败:' + String(e.message || e)); }
+        setBusy(false);
+      };
+      const delModels = async () => {
+        const keys = models.filter((it) => pick[it.key]).map((it) => it.key);
+        if (!keys.length) { setMsg('请先勾选要删除的模型'); return; }
+        if (!window.confirm('确定删除选中的模型?下次使用会自动重新下载(可能很慢/需要网络)。')) return;
+        setBusy(true);
+        try {
+          const r = await api('/cache/clear-models', { keys });
+          setMsg(`已删除模型,释放 ${r.freedMB} MB`);
+          setPick({});
+          await load();
+        } catch (e) { setMsg('删除失败:' + String(e.message || e)); }
+        setBusy(false);
+      };
+
+      const rowOf = (it) => h('div', { key: it.key, style: { ...S.row, marginBottom: '2px' } },
+        it.kind === 'model'
+          ? h('input', { type: 'checkbox', checked: !!pick[it.key], onChange: (e) => setPick((p) => ({ ...p, [it.key]: e.target.checked })) })
+          : h('span', { style: { width: '13px' } }),
+        h('span', { style: { fontSize: '11px' } }, it.label),
+        h('span', { style: { ...S.muted, fontSize: '11px' } }, ` ${it.sizeMB} MB`),
+        h('span', { style: { ...S.muted, fontSize: '10px', opacity: 0.7, marginLeft: 'auto', maxWidth: '45%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: it.dir }, it.dir),
+      );
+
+      return h('div', { style: { ...S.box, marginTop: '10px' } },
+        h('div', { style: { fontWeight: 600, marginBottom: '6px' } }, `缓存与模型(共 ${totalMB} MB)`),
+        h('div', { style: { ...S.muted, fontSize: '11px', marginBottom: '6px' } },
+          '「清理缓存」只删临时文件,不动模型;/「删除模型」会删掉选中模型,下次使用会自动重新下载。'),
+        h('div', { style: { fontWeight: 600, fontSize: '11px', marginTop: '4px' } }, '缓存(可安全清理)'),
+        caches.length ? caches.map(rowOf) : h('div', { style: { ...S.muted, fontSize: '11px' } }, '(暂无可清理缓存)'),
+        h('div', { style: S.row },
+          h('button', { type: 'button', style: S.btn, disabled: busy || !caches.length, onClick: clearCaches }, '清理缓存'),
+        ),
+        h('div', { style: { fontWeight: 600, fontSize: '11px', marginTop: '6px' } }, '模型(勾选后可删除)'),
+        models.length ? models.map(rowOf) : h('div', { style: { ...S.muted, fontSize: '11px' } }, '(未检测到模型)'),
+        h('div', { style: S.row },
+          h('button', { type: 'button', style: S.btnDanger, disabled: busy || !models.length, onClick: delModels }, '删除选中模型'),
+          h('button', { type: 'button', style: S.btn, disabled: busy, onClick: load }, '刷新'),
+        ),
+        msg ? h('div', { style: { fontSize: '11px', marginTop: '2px' } }, msg) : null,
+      );
+    }
+
     function SettingsView({ onBack, folder }) {
       const [model, setModel] = React.useState('');
       const [apiBase, setApiBase] = React.useState('');
@@ -922,12 +1054,14 @@ window.__ModuleLoader__.load({
       const [uiCfg, setUiCfg] = React.useState(null);
       const [wsDir, setWsDir] = React.useState('');
       const [wsExists, setWsExists] = React.useState(false);
+      const [wsGuide, setWsGuide] = React.useState('');
       const saveUi = async (patch) => {
         try {
           const r = await api('/settings/ui', patch);
           if (r) setUiCfg(r);
           const w = await api('/workspace/status');
           setWsExists(!!(w && w.exists));
+          setWsGuide((w && w.guide) || '');
           setMsg('界面设置已保存');
         } catch (e) {
           setMsg('保存失败:' + String(e.message || e));
@@ -1085,7 +1219,7 @@ window.__ModuleLoader__.load({
         api('/settings/ui').then((d) => {
           setUiCfg(d);
           setWsDir(String((d && d.workspaceDir) || ''));
-          api('/workspace/status').then((w) => setWsExists(!!(w && w.exists))).catch(() => setWsExists(false));
+          api('/workspace/status').then((w) => { setWsExists(!!(w && w.exists)); setWsGuide((w && w.guide) || ''); }).catch(() => setWsExists(false));
         }).catch(() => setUiCfg(null));
         api('/settings')
           .then((d) => {
@@ -1375,13 +1509,17 @@ h('div', { style: S.row },
           h('div', { style: { ...S.muted, fontSize: '11px', marginBottom: '6px' } },
             '项目库根目录:每本书的框/译文/原文/配置存到 projects/<书名>/,成品输出到 已完成/<书名>/;'
             + '源漫画文件夹只读。未设置时不允许开始工作。'),
-          h('div', { style: { ...S.muted, fontSize: '11px', marginBottom: '6px', whiteSpace: 'pre-wrap' } },
-            '📌 建议:在 DSH 里给漫画插件单独开一个工作区和一个会话,这里选你创建的那个工作区;\n'
-            + '后续把「在对话里让 DSH 更正错误」也放在这个工作区的同一个会话里进行,报告与对话记录就能集中在一处。'),
-          h('div', { style: S.row },
+          h('details', { style: { ...S.muted, fontSize: '11px', marginBottom: '6px' } },
+            h('summary', { style: { cursor: 'pointer' } }, '📌 建议(点开查看)'),
+            h('div', { style: { marginTop: '4px', lineHeight: 1.6 } },
+              '在 DSH 里给漫画插件单独开一个工作区和一个会话,这里选你创建的那个工作区;'
+              + '后续把「在对话里让 DSH 更正错误」也放在这个工作区的同一个会话里进行,报告与对话记录就能集中在一处。'),
+          ),
+          h('div', { style: { ...S.row, flexWrap: 'wrap' } },
             h('input', {
-              style: { ...S.input, minWidth: '320px' },
+              style: { ...S.input, flex: '1 1 240px', minWidth: 0 },
               placeholder: '例如 E:\\manga-workspace',
+              title: wsDir,
               value: wsDir,
               onChange: (e) => setWsDir(e.target.value),
               onBlur: () => saveUi({ workspaceDir: wsDir.trim() }),
@@ -1392,14 +1530,18 @@ h('div', { style: S.row },
                 try {
                   const r = await api('/workspace/ensure', { dir: wsDir.trim() });
                   setWsExists(!!(r && r.ok));
+                  setWsGuide((r && r.guide) || '');
                   setMsg(r && r.ok ? ('工作区可用:' + r.dir + (r.existed ? '(已存在)' : '(已创建)')) : ('失败:' + ((r && r.error) || '未知')));
                 } catch (e) { setMsg('检查失败:' + String(e.message || e)); }
               },
             }, '检查 / 创建'),
-            h('span', { style: { ...S.muted, fontSize: '11px' } },
-              wsExists ? '● 已就绪' : '○ 未就绪'),
           ),
+          h('div', { style: { ...S.muted, fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: wsDir },
+            (wsExists ? '● 已就绪 · ' : '○ 未就绪 · ') + (wsDir || '(未设置)')),
+          wsGuide ? h('div', { style: { ...S.muted, fontSize: '11px', marginTop: '4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: wsGuide },
+            '📄 已生成「DSH-接管说明.md」(新建对话先读它):' + wsGuide) : null,
         ),
+        h(CachePanel, null),
         h('div', { style: { ...S.box, marginTop: '10px' } },
           h('div', { style: { fontWeight: 600, marginBottom: '6px' } }, 'OCR 兜底(视觉引擎)'),
           h('div', { style: { ...S.muted, fontSize: '11px', marginBottom: '6px', whiteSpace: 'pre-wrap' } },
@@ -1673,6 +1815,77 @@ h('div', { style: S.row },
 
     /* ---------------- 工作台 ---------------- */
 
+    /* ---------- 首次使用:必须先读完帮助(拉到最底部) ---------- */
+    const HELP_ACK_KEY = 'manga-help-ack-v1';
+
+    function HelpGate({ children }) {
+      const [ack, setAck] = React.useState(() => {
+        try { return localStorage.getItem(HELP_ACK_KEY) === '1'; } catch (e) { return false; }
+      });
+      const [ready, setReady] = React.useState(false);
+      const scrollRef = React.useRef(null);
+      React.useEffect(() => {
+        if (ack) return undefined;
+        const timer = setInterval(() => {
+          const root = scrollRef.current;
+          if (!root) return;
+          const nodes = [root, ...root.querySelectorAll('*')];
+          let ok = false;
+          for (const n of nodes) {
+            if (n.scrollHeight > n.clientHeight + 40 && n.clientHeight > 120) {
+              if (n.scrollTop + n.clientHeight >= n.scrollHeight - 10) { ok = true; break; }
+            }
+          }
+          setReady(ok);
+        }, 400);
+        return () => clearInterval(timer);
+      }, [ack]);
+
+      if (ack) return children;
+      return h(React.Fragment, null,
+        h('div', { style: { filter: 'grayscale(0.5) opacity(0.3)', pointerEvents: 'none' } }, children),
+        h('div', {
+          style: {
+            position: 'fixed', inset: 0, zIndex: 99999, background: 'rgba(0,0,0,0.78)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          },
+        },
+          h('div', {
+            style: {
+              width: 'min(980px, 94vw)', height: '92vh', background: '#1b1b1b', color: '#eee',
+              borderRadius: '10px', overflow: 'hidden', display: 'flex', flexDirection: 'column',
+              boxShadow: '0 12px 48px rgba(0,0,0,0.7)',
+            },
+          },
+            h('div', {
+              style: { padding: '10px 16px', fontWeight: 600, fontSize: '14px',
+                borderBottom: '1px solid rgba(255,255,255,0.12)', color: '#ffb26b' },
+            }, '👋 第一次使用:请把下面的帮助拉到最底部,才能开始使用'),
+            h('div', { ref: scrollRef, style: { flex: 1, overflow: 'auto', padding: '4px 14px 10px' } },
+              h(HelpView, { onBack: () => {} }),
+            ),
+            h('div', {
+              style: { padding: '10px 16px', borderTop: '1px solid rgba(255,255,255,0.12)',
+                display: 'flex', alignItems: 'center', gap: '12px' },
+            },
+              h('span', { style: { fontSize: '12px', color: ready ? '#7fd88a' : '#aaa' } },
+                ready ? '✅ 已读到最底部,可以开始使用' : '⬇ 请继续向下滚动到最底部…'),
+              h('span', { style: { flex: 1 } }),
+              h('button', {
+                type: 'button',
+                disabled: !ready,
+                style: { ...S.btn, opacity: ready ? 1 : 0.45, cursor: ready ? 'pointer' : 'not-allowed' },
+                onClick: () => {
+                  try { localStorage.setItem(HELP_ACK_KEY, '1'); } catch (e) { /* ignore */ }
+                  setAck(true);
+                },
+              }, '我已读完,开始使用'),
+            ),
+          ),
+        ),
+      );
+    }
+
     function Workbench() {
       const [view, setView] = React.useState(() => {
         try {
@@ -1729,7 +1942,8 @@ h('div', { style: S.row },
             const p = await api('/project?folder=' + encodeURIComponent(folder));
             if (alive) setProj(p);
           } catch (e) {
-            if (alive) setProj({ ok: false, error: String((e && e.message) || e) });
+            // 后台还是旧版本(没有 /project 接口)时不要拦住用户,退回旧行为
+            if (alive) setProj({ ok: false, code: 'NETWORK', error: String((e && e.message) || e) });
           }
         })();
         return () => { alive = false; };
@@ -1800,7 +2014,7 @@ h('div', { style: S.row },
       // 启动页:引擎检测 + 视觉引擎状态
       React.useEffect(() => {
         api('/infra').then(setInfra).catch(() => setInfra(null));
-        api('/workspace/status').then((w) => setWsExists(!!(w && w.exists))).catch(() => setWsExists(true));
+        api('/workspace/status').then((w) => { setWsExists(!!(w && w.exists)); setWsGuide((w && w.guide) || ''); }).catch(() => setWsExists(true));
         api('/version-check').then(setVerInfo).catch(() => setVerInfo({ ok: false }));
         api('/settings')
           .then((d) => setVision({ model: d.model, apiBase: d.apiBase, apiKeySet: !!d.apiKeySet }))
@@ -1857,17 +2071,28 @@ h('div', { style: S.row },
         }
       }
 
-      async function refresh() {
+      // fromUser=true 表示用户主动点「开始」/回车;自动恢复时不要弹提示、不要跳设置页
+      async function refresh(fromUser) {
         if (!folder) return;
         setLoading(true);
         try {
           // 强制先设置「嵌字工作区」:没有工作区就不让开始(项目数据要存到工作区里)
           let pj = null;
-          try { pj = await api('/project?folder=' + encodeURIComponent(folder)); } catch (e) { pj = null; }
+          try {
+            pj = await api('/project?folder=' + encodeURIComponent(folder));
+          } catch (e) {
+            pj = { ok: false, code: 'NETWORK', error: String((e && e.message) || e) };
+          }
           setProj(pj);
-          if (!pj || !pj.ok) {
-            setMsg('请先在「设置」里指定嵌字工作区,再开始处理这本书');
-            setView('settings');
+          // 只有后台明确回报「没有工作区」才拦截;接口不存在(旧后台)/网络错误 → 放行
+          const needWs = !!(pj && pj.ok === false && pj.code === 'PROJECT_NO_WORKSPACE');
+          if (needWs) {
+            if (fromUser) {
+              setMsg('请先在「设置」里指定嵌字工作区,再开始处理这本书');
+              setView('settings');
+            } else if (view === 'work') {
+              setView('home');
+            }
             return;
           }
           const d = await api(`/status?folder=${encodeURIComponent(folder)}`);
@@ -2467,7 +2692,7 @@ h('div', { style: S.row },
               value: folder,
               placeholder: '漫画文件夹绝对路径(可粘贴,或点「浏览」选择)',
               onChange: (e) => setFolder(e.target.value),
-              onKeyDown: (e) => { if (e.key === 'Enter') refresh(); },
+              onKeyDown: (e) => { if (e.key === 'Enter') refresh(true); },
             }),
             h('button', {
               type: 'button',
@@ -2481,7 +2706,7 @@ h('div', { style: S.row },
               type: 'button',
               style: { ...S.btnOn, padding: '7px 18px', fontSize: '13px' },
               disabled: loading || !folder,
-              onClick: refresh,
+              onClick: () => refresh(true),
             }, loading ? '读取中…' : '开始'),
             h('button', {
               type: 'button',
@@ -2574,7 +2799,7 @@ h('div', { style: S.row },
           proj && proj.ok ? h('span', { style: S.chip, title: proj.dir || '' }, '项目 ' + (proj.name || '')) : null,
           h('span', { style: { ...S.muted, maxWidth: '40%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, folder),
         ),
-        (proj && !proj.ok) ? h('div', { style: { ...S.box, borderColor: 'rgba(255,120,0,0.55)' } },
+        (proj && proj.ok === false && proj.code === 'PROJECT_NO_WORKSPACE') ? h('div', { style: { ...S.box, borderColor: 'rgba(255,120,0,0.55)' } },
           h('div', { style: { fontWeight: 600, marginBottom: '4px' } }, '⚠ 还没有设置「嵌字工作区」'),
           h('div', { style: { ...S.muted, fontSize: '11px' } },
             '标框/译文等数据会存到工作区的项目目录里(源漫画文件夹保持不动),成品输出到工作区的「已完成」文件夹。'),
@@ -2583,6 +2808,10 @@ h('div', { style: S.row },
             h('span', { style: { ...S.muted, fontSize: '11px' } }, String((proj && (proj.error || proj.code)) || '')),
           ),
         ) : null,
+        (proj && proj.ok === false && proj.code === 'NETWORK')
+          ? h('div', { style: { ...S.muted, fontSize: '11px', marginTop: '2px' } },
+              '⚠ 后台还是旧版本(没有项目库接口):重开 DSH(关掉再启动,不是刷新面板)后自动改用项目库。')
+          : null,
         (proj && proj.ok) ? h('div', { style: { ...S.muted, fontSize: '11px', marginTop: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } },
           '数据目录:' + (proj.dir || '') + ' · 成品输出:' + (proj.doneDir || '')) : null,
         (!wsExists) ? h('div', { style: { ...S.box, borderColor: 'rgba(255,180,0,0.5)' } },
@@ -2600,6 +2829,7 @@ h('div', { style: S.row },
           h('div', { style: S.row },
             h('button', { type: 'button', style: S.btn, disabled: loading, onClick: () => run('ocr') }, 'OCR'),
             h('button', { type: 'button', style: S.btn, disabled: loading, onClick: () => run('translate') }, '翻译'),
+            SEP(),
             h('button', {
               type: 'button', style: S.btn, disabled: loading,
               title: '当前页所有框:视觉引擎读原文 → DSH 模型翻译(兜底用)',
@@ -2624,7 +2854,9 @@ h('div', { style: S.row },
                   + (estInfo.sfx ? estInfo.sfx.yuanMin : '?') + '~¥' + (estInfo.sfx ? estInfo.sfx.yuanMax : '?')
                   + ' · 整本 ' + estInfo.all.boxes + ' 框 ¥' + estInfo.all.yuanMin + '~¥' + estInfo.all.yuanMax)
               : null,
+            SEP(),
             h('button', { type: 'button', style: S.btn, disabled: loading, onClick: () => run('proofread') }, '校对'),
+            SEP(),
             h('button', { type: 'button', style: S.btn, disabled: loading, onClick: () => run('embed') }, '嵌字'),
             h('button', {
               type: 'button',
@@ -2637,6 +2869,7 @@ h('div', { style: S.row },
               title: '把请求写到工作区,在本对话里说「执行嵌字」后由 DSH 执行',
               onClick: () => { try { embedToChat(); } catch (e) { setMsg('提交异常:' + String(e)); } },
             }, '交给对话'),
+            h('span', { style: { flex: 1 } }),
             h('button', {
               type: 'button', style: S.btnDanger || S.btn,
               title: '终止正在运行的 OCR / 翻译 / 校对 / 嵌字 / DSH 任务',
@@ -3001,7 +3234,7 @@ h('div', { style: S.row },
         return this.props.children;
       }
     }
-    function SafePanel() { return h(PanelErrorBoundary, null, h(Workbench)); }
+    function SafePanel() { return h(PanelErrorBoundary, null, h(HelpGate, null, h(Workbench))); }
 
     const ICON_STYLE = { display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%', fontSize: '15px', lineHeight: 1 };
     function PanelIcon() { return h('span', { style: ICON_STYLE, 'aria-hidden': true }, '🎨'); }

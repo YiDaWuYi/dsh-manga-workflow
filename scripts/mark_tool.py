@@ -16,7 +16,7 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageDraw, ImageTk
-import json, os, sys, subprocess, threading
+import json, os, sys, shutil, subprocess, threading
 import styles
 
 # 项目根目录(本文件所在 manga_tool 的上一级),所有路径从这里推导,避免写死个人目录
@@ -31,6 +31,7 @@ class MarkTool:
             pass
         self.src_dir = src_dir
         self.regions_file = regions_file
+        self.data_dir = os.path.dirname(os.path.abspath(regions_file))
         self.pages = self._list_pages(src_dir)
         if not self.pages:
             messagebox.showerror("错误", f"图片文件夹里没有图片: {src_dir}")
@@ -95,6 +96,7 @@ class MarkTool:
         self._load_page()
         pass
         self.root.after(80, self.refresh)   # 窗口真正显示后再适配一次尺寸
+        self.root.after(500, lambda: first_run_help_gate(self.root))
 
     # ---------- 基础 ----------
     @staticmethod
@@ -210,49 +212,103 @@ class MarkTool:
             return 20
 
     # ---------- UI ----------
+    def _toggle_row2(self):
+        """收起/展开第二行处理按钮:展开时箭头朝右 ▸,收起时箭头朝下 ▾。"""
+        try:
+            if getattr(self, '_row2_open', True):
+                self._row2_wrap.pack_forget()
+                self._row2_btn.config(text="▾")
+                self._row2_open = False
+            else:
+                try:
+                    self._row2_wrap.pack(side=tk.TOP, fill=tk.X, padx=4, pady=(1, 0), before=self._row2_next)
+                except Exception:
+                    self._row2_wrap.pack(side=tk.TOP, fill=tk.X, padx=4, pady=(1, 0))
+                self._row2_btn.config(text="▸")
+                self._row2_open = True
+        except Exception:
+            pass
+
     def _build_ui(self):
+        def _sep(parent):
+            tk.Label(parent, text='│', fg='#b8b8b8').pack(side=tk.LEFT, padx=6)
+
         # 第一行:导航 + 操作
         top = tk.Frame(self.root)
         top.pack(side=tk.TOP, fill=tk.X, padx=4, pady=(4, 1))
-        tk.Button(top, text="◀", width=3, command=self.prev_page).pack(side=tk.LEFT)
+        self._row2_btn = tk.Button(top, text="▸", width=2, relief=tk.FLAT,
+                                   font=("Microsoft YaHei", 9),
+                                   command=self._toggle_row2)
+        self._row2_btn.pack(side=tk.LEFT, padx=(0, 2))
+        _first = tk.Button(top, text="◀", width=3, command=self.prev_page)
+        _first.pack(side=tk.LEFT)
+        self._row1_first = _first
         self.jump_var = tk.StringVar()
         jump = tk.Entry(top, textvariable=self.jump_var, width=5, justify='center')
         jump.pack(side=tk.LEFT, padx=2)
         jump.bind('<Return>', lambda e: self.jump_page())
         tk.Button(top, text="跳", width=3, command=self.jump_page).pack(side=tk.LEFT, padx=(0, 2))
         tk.Button(top, text="▶", width=3, command=self.next_page).pack(side=tk.LEFT)
-        tk.Label(top, text="页").pack(side=tk.LEFT, padx=(2, 6))
+        tk.Label(top, text="页").pack(side=tk.LEFT, padx=(2, 4))
+        tk.Button(top, text="刷新", command=self.refresh).pack(side=tk.LEFT, padx=(0, 2))
+        _sep(top)
         tk.Button(top, text="撤销", command=self.undo).pack(side=tk.LEFT, padx=4)
-        tk.Button(top, text="清空本页", command=self.clear_page).pack(side=tk.LEFT, padx=4)
         tk.Button(top, text="保存", command=self.save_btn).pack(side=tk.LEFT, padx=4)
-        tk.Button(top, text="自动识别(OCR)", command=self.run_ocr).pack(side=tk.LEFT, padx=4)
-        tk.Button(top, text="自动标框", command=self.auto_detect).pack(side=tk.LEFT, padx=4)
-        ttk.Combobox(top, textvariable=self.detect_mode, width=11, state='readonly',
-                     values=['全部(自动区分)', '只标气泡', '只标拟声词']).pack(side=tk.LEFT, padx=(2, 0))
-        tk.Button(top, text="刷新", command=self.refresh).pack(side=tk.LEFT, padx=4)
-        tk.Button(top, text="一键识别(整本:标框+OCR)", command=self.one_click).pack(side=tk.LEFT, padx=4)
-        tk.Button(top, text="全自动(OCR→翻译→校对)",
-                  command=self.auto_all).pack(side=tk.LEFT, padx=(4, 0))
-        tk.Button(top, text="同步", command=self.sync_pairs,
-                  ).pack(side=tk.LEFT, padx=(4, 0))
-        tk.Button(top, text="翻译", command=self.translate_text).pack(side=tk.LEFT, padx=(4, 0))
-        tk.Button(top, text="校对(嵌字前)", command=self.proofread_pre).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Combobox(top, textvariable=self.proof_mode, values=["原文+译文", "只校原文"],
-                     width=9, state='readonly').pack(side=tk.LEFT, padx=(2, 0))
-        mb = tk.Menubutton(top, text="更多 ▾", relief=tk.RAISED)
-        menu = tk.Menu(mb, tearoff=0)
-        menu.add_command(label="翻译设置", command=self.translate_settings)
-        menu.add_command(label="设置", command=lambda: _show_settings(self.root, self.src_dir))
-        menu.add_command(label="帮助", command=self.show_help)
-        mb.config(menu=menu)
-        mb.pack(side=tk.LEFT, padx=(6, 0))
-        tk.Button(top, text="取消当前任务", command=self.cancel_job
-                  ).pack(side=tk.LEFT, padx=(6, 0))
-        tk.Label(top, text="范围:").pack(side=tk.LEFT, padx=(8, 0))
+        tk.Button(top, text="清空本页", command=self.clear_page).pack(side=tk.LEFT, padx=4)
+        _sep(top)
+        tk.Label(top, text="范围(OCR/标框/翻译/全自动):").pack(side=tk.LEFT, padx=(0, 0))
         tk.Radiobutton(top, text="当前页", variable=self.scope, value="page").pack(side=tk.LEFT)
         tk.Radiobutton(top, text="整本", variable=self.scope, value="book").pack(side=tk.LEFT)
-        tk.Button(top, text="确认嵌字", command=self.confirm_embed_via_web
-                  ).pack(side=tk.LEFT, padx=(10, 0))
+        tk.Button(top, text="取消当前任务", command=self.cancel_job).pack(side=tk.RIGHT, padx=(6, 4))
+        # 第二行:按「标注 → 识别 → 翻译 → 批量 → 嵌字」分组排布(行首小箭头可收起/展开)
+        row2wrap = tk.Frame(self.root)
+        row2wrap.pack(side=tk.TOP, fill=tk.X, padx=4, pady=(1, 0))
+        top1b = tk.Frame(row2wrap)
+        top1b.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._row2_frame = top1b
+        self._row2_wrap = row2wrap
+        self._row2_open = True
+        # ① 标注
+        tk.Button(top1b, text="自动标框", command=self.auto_detect).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Combobox(top1b, textvariable=self.detect_mode, width=11, state='readonly',
+                     values=['全部(自动区分)', '只标气泡', '只标拟声词']).pack(side=tk.LEFT, padx=(0, 2))
+        _sep(top1b)
+        # ② 识别 / 查看
+        tk.Button(top1b, text="OCR识别", command=self.run_ocr).pack(side=tk.LEFT, padx=(0, 4))
+        tk.Button(top1b, text="单页识图", command=lambda: self.vision_page(False)).pack(side=tk.LEFT, padx=4)
+        tk.Button(top1b, text="拟声填词", command=lambda: self.vision_page(True)).pack(side=tk.LEFT, padx=4)
+        _sep(top1b)
+        # ③ 翻译 / 校对
+        tk.Button(top1b, text="翻译", command=self.translate_text).pack(side=tk.LEFT, padx=(0, 4))
+        tk.Button(top1b, text="校对", command=self.proofread_pre).pack(side=tk.LEFT, padx=4)
+        ttk.Combobox(top1b, textvariable=self.proof_mode, values=["原文+译文", "只校原文"],
+                     width=9, state='readonly').pack(side=tk.LEFT, padx=(0, 2))
+        _sep(top1b)
+        # ④ 批量流程
+        tk.Button(top1b, text="一键识别", command=self.one_click).pack(side=tk.LEFT, padx=(0, 4))
+        tk.Button(top1b, text="全自动", command=self.auto_all).pack(side=tk.LEFT, padx=4)
+        tk.Button(top1b, text="同步", command=self.sync_pairs).pack(side=tk.LEFT, padx=4)
+        _sep(top1b)
+        # ⑤ 嵌字
+        tk.Button(top1b, text="本机嵌字", command=self.confirm_embed_local).pack(side=tk.LEFT, padx=(0, 4))
+        tk.Button(top1b, text="网页嵌字", command=self.confirm_embed_via_web).pack(side=tk.LEFT, padx=4)
+        _amb = tk.Menubutton(top1b, text="auto▾", relief=tk.RAISED)
+        _am = tk.Menu(_amb, tearoff=0)
+        _am.add_command(label="本页 auto → 参与", command=lambda: self.mark_auto('page'))
+        _am.add_command(label="仅补有译文的 auto", command=lambda: self.mark_auto('withtrans'))
+        _am.add_command(label="全书 auto → 参与", command=lambda: self.mark_auto('book'))
+        _am.add_command(label="恢复 auto 标记(不参与)", command=lambda: self.mark_auto('restore'))
+        _amb.config(menu=_am)
+        _amb.pack(side=tk.LEFT, padx=(4, 0))
+        # ⑥ 更多（固定最右）
+        _mb = tk.Menubutton(top1b, text="更多 ▾", relief=tk.RAISED)
+        _menu = tk.Menu(_mb, tearoff=0)
+        _menu.add_command(label="翻译设置", command=self.translate_settings)
+        _menu.add_command(label="设置", command=lambda: _show_settings(self.root, self.src_dir))
+        _menu.add_command(label="帮助", command=self.show_help)
+        _mb.config(menu=_menu)
+        _mb.pack(side=tk.RIGHT, padx=(6, 0))
+
         
         # 底部常驻状态栏:页码/文件名/框数 + 当前任务进度(始终可见)
         bottom = tk.Frame(self.root)
@@ -265,6 +321,7 @@ class MarkTool:
         # 第二行:标注设置
         top2 = tk.Frame(self.root)
         top2.pack(side=tk.TOP, fill=tk.X, padx=4, pady=(0, 4))
+        self._row2_next = top2   # 展开时插回它前面,保持行序
         tk.Label(top2, text="模式:", fg='#2a5d8f').pack(side=tk.LEFT)
         tk.Radiobutton(top2, text="框选(B)", variable=self.mode, value="box").pack(side=tk.LEFT)
         tk.Radiobutton(top2, text="自由框选(P)", variable=self.mode, value="paint").pack(side=tk.LEFT, padx=(0, 10))
@@ -277,20 +334,22 @@ class MarkTool:
         self._cover_frame.pack(side=tk.LEFT, padx=(6, 10))
         self._on_kind_change()
 
-        tk.Label(top2, text="字号:", fg='#2a5d8f').pack(side=tk.LEFT)
-        ttk.Combobox(top2, textvariable=self.size, values=[str(i) for i in range(10, 81, 10)],
+        # 第三行(标注设置续):字号/方向/样式/语言 (避免一行过宽被裁)
+        top2b = tk.Frame(self.root)
+        top2b.pack(side=tk.TOP, fill=tk.X, padx=4, pady=(0, 4))
+        tk.Label(top2b, text="字号:", fg='#2a5d8f').pack(side=tk.LEFT)
+        ttk.Combobox(top2b, textvariable=self.size, values=[str(i) for i in range(10, 81, 10)],
                      width=4).pack(side=tk.LEFT)
-        tk.Checkbutton(top2, text="自动字号", variable=self.auto_size).pack(side=tk.LEFT, padx=(2, 10))
-
-        tk.Label(top2, text="方向:", fg='#2a5d8f').pack(side=tk.LEFT)
+        tk.Checkbutton(top2b, text="自动字号", variable=self.auto_size).pack(side=tk.LEFT, padx=(2, 10))
+        tk.Label(top2b, text="方向:", fg='#2a5d8f').pack(side=tk.LEFT)
         for _v, _t in (('auto', '自动检测'), ('v', '竖排'), ('h', '横排')):
-            tk.Radiobutton(top2, text=_t, variable=self.dir_mode, value=_v).pack(side=tk.LEFT)
-        self._style_btn = tk.Button(top2, text="样式 ▸", width=7, command=self._toggle_style_bar)
+            tk.Radiobutton(top2b, text=_t, variable=self.dir_mode, value=_v).pack(side=tk.LEFT)
+        self._style_btn = tk.Button(top2b, text="样式 ▸", width=7, command=self._toggle_style_bar)
         self._style_btn.pack(side=tk.LEFT, padx=(6, 0))
-        tk.Label(top2, text="语言:").pack(side=tk.LEFT)
-        tk.Radiobutton(top2, text="日", variable=self.lang, value="ja").pack(side=tk.LEFT)
-        tk.Radiobutton(top2, text="韩", variable=self.lang, value="ko").pack(side=tk.LEFT)
-        tk.Radiobutton(top2, text="英", variable=self.lang, value="en").pack(side=tk.LEFT)
+        tk.Label(top2b, text="语言:").pack(side=tk.LEFT, padx=(10, 0))
+        tk.Radiobutton(top2b, text="日", variable=self.lang, value="ja").pack(side=tk.LEFT)
+        tk.Radiobutton(top2b, text="韩", variable=self.lang, value="ko").pack(side=tk.LEFT)
+        tk.Radiobutton(top2b, text="英", variable=self.lang, value="en").pack(side=tk.LEFT)
 
         # 可视化样式库(一行小图:直接看到渲染效果)
         self._style_box = tk.Frame(self.root)
@@ -638,6 +697,11 @@ class MarkTool:
         self._on_kind_change()
 
     def _toggle_cover(self):
+        # 拟声词只允许 直盖↔抹除(与网页端一致)
+        if self.kind.get() == 'plain':
+            self.cover.set('erase' if self.cover.get() == 'overlay' else 'overlay')
+            self._on_cover_change()
+            return
         order = ['overlay', 'erase', 'cover']
         cur = self.cover.get()
         self.cover.set(order[(order.index(cur) + 1) % 3] if cur in order else 'overlay')
@@ -1506,6 +1570,196 @@ class MarkTool:
         txt.config(state='disabled')
         tk.Button(dlg, text='关闭', command=dlg.destroy, width=10).pack(pady=6)
 
+    # ---------- 项目库 / 成品目录 ----------
+    def _project_info(self):
+        """返回 (数据目录, 成品目录, 书名)。成品目录 = <工作区>/已完成/<书名>。"""
+        ws = ''
+        try:
+            p = os.path.join(os.path.expanduser('~'), '.manga-workflow', 'settings.json')
+            if os.path.exists(p):
+                ws = (json.load(open(p, encoding='utf-8')) or {}).get('workspaceDir') or ''
+        except Exception:
+            ws = ''
+        data = getattr(self, 'data_dir', None) or os.path.dirname(os.path.abspath(self.regions_file))
+        name = os.path.basename(os.path.abspath(self.src_dir.rstrip('\\/')))
+        done = os.path.join(ws, '已完成', name) if ws else ''
+        return data, done, name
+
+    def _out_dir(self):
+        data = getattr(self, 'data_dir', None) or os.path.dirname(os.path.abspath(self.regions_file))
+        return os.path.join(data, 'out_lama' if self.use_lama.get() else 'out')
+
+    def _copy_done(self):
+        """把成品 PNG 复制到 <工作区>/已完成/<书名>/。"""
+        try:
+            data, done, name = self._project_info()
+            if not done:
+                return ''
+            src = self._out_dir()
+            if not os.path.isdir(src):
+                return ''
+            os.makedirs(done, exist_ok=True)
+            n = 0
+            for f in sorted(os.listdir(src)):
+                if f.lower().endswith(('.png', '.jpg', '.webp')):
+                    shutil.copy2(os.path.join(src, f), os.path.join(done, f))
+                    n += 1
+            if n:
+                self.status.config(text='[成品] %s(共 %d 页)' % (done, n))
+            return done if n else ''
+        except Exception as e:
+            print('[成品] 复制失败:', e)
+            return ''
+
+    def mark_auto(self, mode):
+        """auto 参与:mode = page(本页全部) / withtrans(仅补有译文的) / book(全书) / restore(恢复标记)。"""
+        try:
+            self._save()
+            n = 0
+            keys = [self._page_key()] if mode == 'page' else sorted(self.regions)
+            for k in keys:
+                row = self.trans.get(k) or []
+                for i, b in enumerate(self.regions.get(k) or []):
+                    zh = str(row[i] if i < len(row) else '').strip()
+                    if mode == 'restore':
+                        if not b.get('auto'):
+                            b['auto'] = True
+                            n += 1
+                    elif b.get('auto'):
+                        if mode == 'withtrans' and not zh:
+                            continue
+                        b['auto'] = False
+                        n += 1
+            self._snapshot()
+            self._save()
+            self._load_page()
+            self.status.config(text='auto 调整完成:%d 个框' % n)
+            messagebox.showinfo('auto 参与', '已调整 %d 个框。' % n)
+        except Exception as e:
+            messagebox.showerror('auto 参与失败', str(e))
+
+    # ---------- 本机确认嵌字(体检 → 校对 → 嵌字) ----------
+    def confirm_embed_local(self):
+        if self._any_task_running():
+            self._job_busy_msg()
+            return
+        self._save()
+        here, vpy, env = self._job_env()
+        env['PYTHONIOENCODING'] = 'utf-8'
+        env['MANGA_DATA_DIR'] = getattr(self, 'data_dir', self.src_dir)
+        out = self._out_dir()
+        mode = 'orig' if self.proof_mode.get() == '只校原文' else 'both'
+        embed_cmd = [vpy, os.path.join(here, 'embed_regions.py'), self.src_dir,
+                     self.regions_file, self.trans_file, out]
+        if not self.auto_size.get():
+            embed_cmd.append('--no-auto-size')
+        if not self.auto_dir.get():
+            embed_cmd.append('--no-auto-dir')
+        if self.use_lama.get():
+            embed_cmd.append('--lama')
+        steps = [
+            ('体检', [vpy, os.path.join(here, 'preflight.py'), self.src_dir]),
+            ('校对', [vpy, os.path.join(here, 'proofread.py'), self.src_dir, '--stage', 'pre', '--mode', mode]),
+            ('嵌字', embed_cmd),
+        ]
+        self._ce_steps = steps
+        self._ce_env = env
+        self._ce_i = 0
+        self.status.config(text='确认嵌字:体检 0%')
+        self.root.after(50, self._confirm_next)
+
+    def _confirm_next(self):
+        steps = getattr(self, '_ce_steps', None)
+        i = getattr(self, '_ce_i', 0)
+        if not steps or i >= len(steps):
+            self.status.config(text='确认嵌字:完成 100%')
+            done = self._copy_done()
+            self.trans = self._load(self.trans_file)
+            self._load_page()
+            msg = '嵌字完成:\n%s' % self._out_dir()
+            if done:
+                msg += '\n\n成品已复制到:\n%s' % done
+            messagebox.showinfo('确认嵌字', msg)
+            return
+        name, cmd = steps[i]
+        self._ce_i = i + 1
+        pct0 = {0: 0, 1: 10, 2: 30}.get(i, 30)
+        pct1 = {0: 10, 1: 30, 2: 95}.get(i, 95)
+        self.status.config(text='确认嵌字[%s]:%d%% 启动...' % (name, pct0))
+        lines_seen = {'n': 0}
+        total = max(1, len(self.regions))
+
+        def line_cb(l, n=name, a=pct0, z=pct1):
+            lines_seen['n'] += 1
+            if n == '嵌字':
+                pct = min(z, a + int((lines_seen['n'] / float(total)) * (z - a)))
+                self.status.config(text='确认嵌字[%s]:%d%% %s' % (n, pct, l[:60]))
+            else:
+                self.status.config(text='确认嵌字[%s]:%d%% %s' % (n, a, l[:60]))
+
+        def done(err, code, lines):
+            # 体检/校对:退出码 1 表示「发现问题」,不算失败
+            if err and code not in (0, 1):
+                self.status.config(text='确认嵌字:%s 失败' % name)
+                messagebox.showerror('确认嵌字失败', '%s 出错:\n%s' % (name, err))
+                return
+            self.root.after(30, self._confirm_next)
+
+        self._run_job('确认嵌字·' + name, cmd, getattr(self, '_ce_env', {}),
+                      on_line=line_cb, on_done=done)
+
+    # ---------- 单页识图翻译 / 拟声识别填词 ----------
+    def vision_page(self, sfx=False):
+        if self._any_task_running():
+            self._job_busy_msg()
+            return
+        self._save()
+        here, vpy, env = self._job_env()
+        env['PYTHONIOENCODING'] = 'utf-8'
+        env['MANGA_DATA_DIR'] = getattr(self, 'data_dir', self.src_dir)
+        key = self._page_key()
+        cmd = [vpy, os.path.join(here, 'ocr_fallback.py'), self.src_dir,
+               '--mode', 'all', '--force', '--page', key]
+        name = '拟声识别填词' if sfx else '单页识图翻译'
+        self.status.config(text='%s:识别第 %s 页...' % (name, key))
+
+        def done(err, code, lines):
+            if err and code not in (0, 1):
+                self.status.config(text='%s 识别失败' % name)
+                messagebox.showerror(name + '失败', err)
+                return
+            self.status.config(text='%s:翻译第 %s 页...' % (name, key))
+            try:
+                n_done = _dsh_translate_via_bridge(self.src_dir, key, timeout=600, overwrite=True)
+            except Exception as e:
+                self.status.config(text='%s:DSH 翻译失败' % name)
+                messagebox.showerror(name + '失败',
+                                     '识别完成,但 DSH 翻译失败:\n%s\n\n请先启动 DSH 并打开本会话后重试。' % e)
+                return
+            try:
+                self.trans = self._load(self.trans_file)
+                self.box_text = self._load(self.ocr_file)
+                if sfx:
+                    n = 0
+                    row = self.trans.get(key) or []
+                    for i, b in enumerate(self.regions.get(key) or []):
+                        zh = str(row[i] if i < len(row) else '').strip()
+                        if zh:
+                            b['auto'] = False
+                            b['kind'] = b.get('kind') or 'plain'
+                            n += 1
+                    self._save()
+                    messagebox.showinfo(name, '本页识别 + 翻译完成,%d 个框已设为「参与嵌字」。' % n)
+                else:
+                    messagebox.showinfo(name, '本页识别 + 翻译完成。')
+            except Exception as e:
+                messagebox.showerror(name, str(e))
+            self._load_page()
+
+        self._run_job(name, cmd, env,
+                      on_line=lambda l: self.status.config(text='%s: %s' % (name, l[:70])),
+                      on_done=done)
+
     # ---------- OCR 识别 / 修改 ----------
     def run_ocr(self):
         """整本/当前页 OCR:后台线程 + 逐行进度。"""
@@ -2195,7 +2449,8 @@ def _show_engine_help(parent, statuses):
     frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
     sb = tk.Scrollbar(frame)
     sb.pack(side=tk.RIGHT, fill=tk.Y)
-    txt = tk.Text(frame, wrap='word', font=('Microsoft YaHei', 10), yscrollcommand=sb.set)
+    # width=1 + expand=True 让 Text 跟随窗口宽度;wrap='char' 保证中文长句也能折行
+    txt = tk.Text(frame, width=1, wrap='char', font=('Microsoft YaHei', 10), yscrollcommand=sb.set)
     txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
     sb.config(command=txt.yview)
 
@@ -2475,7 +2730,11 @@ def _open_editor(src, regions):
     _save_last(src)          # 记住本次工作目录
     root = tk.Tk()
     root.title("漫画汉化 · 标框工具 " + APP_VERSION)
-    root.geometry("1200x1000")
+    root.geometry("1680x1020")
+    try:
+        root.minsize(1500, 700)
+    except Exception:
+        pass
     try:
         root.state('zoomed')   # Windows 下最大化,保证整页可见
     except Exception:
@@ -2523,6 +2782,31 @@ def _dsh_translate_via_bridge(folder, page=None, timeout=1800, overwrite=True):
     if not j.get('ok'):
         raise RuntimeError(j.get('error') or 'DSH 翻译失败')
     return int(j.get('done') or 0)
+
+
+def _bridge_call(pathname, body=None, timeout=30):
+    """调用 DSH 桥的 JSON 接口;返回 (ok, data|错误文本)。"""
+    import urllib.request
+    info = _dsh_bridge_info()
+    if not info:
+        return False, 'DSH 未在运行(找不到本机桥)'
+    url = 'http://127.0.0.1:%d%s' % (info['port'], pathname)
+    data = None
+    headers = {'x-manga-token': info['token']}
+    method = 'GET'
+    if body is not None:
+        data = json.dumps(body).encode('utf-8')
+        headers['Content-Type'] = 'application/json'
+        method = 'POST'
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            j = json.loads(r.read().decode('utf-8', 'replace'))
+        if not j.get('ok'):
+            return False, j.get('error') or '未知错误'
+        return True, j
+    except Exception as e:
+        return False, str(e)
 
 
 def _test_ai_text(model, api_base, api_key):
@@ -2767,7 +3051,7 @@ def _style_preview_photo(style_id, w=54, h=30, font=''):
 
 
 # ---------------- 版本 ----------------
-APP_VERSION = 'V1.14'
+APP_VERSION = 'V1.15.18'
 
 # ---------------- 帮助窗口(程序内渲染,不依赖 .md 文件关联)----------------
 
@@ -2830,6 +3114,7 @@ def _render_markdown(txt, text):
                     cells = []
                     for j in range(ncol):
                         c = r[j] if j < len(r) else ''
+                        c = re.sub(r'\*\*(.+?)\*\*', r'\1', c)   # 表格里也去掉 ** 粗体标记
                         cells.append(c + ' ' * max(0, widths[j] - dw(c)))
                     tag = 'thead' if ri == 0 else 'table'
                     txt.insert('end', ('  '.join(cells)).rstrip() + '\n', tag)
@@ -2873,6 +3158,9 @@ def _show_help_window(parent):
     except Exception as e:
         text = '读取帮助文件失败:\n%s\n\n文件位置:%s' % (e, path)
 
+    main_text, _, footer = text.partition('<!--FOOTER-->')
+    footer = footer.strip()
+
     dlg = tk.Toplevel(parent)
     dlg.title('使用说明')
     dlg.geometry('900x700')
@@ -2887,21 +3175,210 @@ def _show_help_window(parent):
     tk.Label(bar, text='使用说明(流程 / 快捷键 / 双端差异 / 设置 / OCR 兜底)',
              font=('Microsoft YaHei', 9), fg='#666').pack(side=tk.LEFT)
 
+    # 底部灰色注明:固定在窗口底部居中,不占滚动区(随窗口浮动)
+    if footer:
+        tk.Label(dlg, text=footer, fg='#999999', font=('Microsoft YaHei', 8),
+                 justify='center', anchor='center', wraplength=760).pack(
+            side=tk.BOTTOM, fill=tk.X, pady=(0, 8))
+
     frame = tk.Frame(dlg)
     frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
     sb = tk.Scrollbar(frame)
     sb.pack(side=tk.RIGHT, fill=tk.Y)
-    txt = tk.Text(frame, wrap='word', font=('Microsoft YaHei', 10), yscrollcommand=sb.set)
+    # width=1 + expand 跟随窗口宽度;wrap='char' 保证中文长句折行(中文没有空格,wrap='word' 不折)
+    txt = tk.Text(frame, width=1, wrap='char', font=('Microsoft YaHei', 10), yscrollcommand=sb.set)
     txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
     sb.config(command=txt.yview)
 
-    main_text, _, footer = text.partition('<!--FOOTER-->')
     _render_markdown(txt, main_text)
     txt.config(state='disabled')
-    if footer.strip():
-        tk.Label(dlg, text=footer.strip(), fg='#999999',
-                 font=('Microsoft YaHei', 8), justify='center').pack(pady=(0, 8))
     return dlg
+
+
+# ---------------- 首次使用帮助门禁 ----------------
+def _help_ack_workspace_dirs():
+    """从设置里取「嵌字工作区」目录(不存在则返回空)。"""
+    dirs = []
+    try:
+        with open(_ui_cfg_file(), encoding='utf-8') as f:
+            ws = (json.load(f) or {}).get('workspaceDir') or ''
+        ws = str(ws).strip()
+        if ws and os.path.isdir(ws):
+            dirs.append(ws)
+    except Exception:
+        pass
+    try:
+        cwd = os.getcwd()
+        if cwd and os.path.isdir(cwd) and cwd not in dirs:
+            dirs.append(cwd)
+    except Exception:
+        pass
+    return dirs
+
+
+def _help_ack_candidates():
+    """返回可能写入门禁确认的路径(按优先级)。"""
+    out = []
+    env = os.environ.get('MANGA_HELP_ACK')
+    if env:
+        out.append(env)
+    # 优先放在「嵌字工作区」里(工作区一定可写;插件/桌面端都可能受限不能写用户目录)
+    for wp in _help_ack_workspace_dirs():
+        out.append(os.path.join(wp, '.manga-workflow', 'help_ack.json'))
+    out.append(os.path.join(os.path.expanduser('~'), '.manga-workflow', 'help_ack.json'))
+    try:
+        la = os.environ.get('LOCALAPPDATA')
+        if la:
+            out.append(os.path.join(la, 'manga-workflow', 'help_ack.json'))
+    except Exception:
+        pass
+    try:
+        import tempfile
+        out.append(os.path.join(tempfile.gettempdir(), 'manga_help_ack.json'))
+    except Exception:
+        pass
+    try:
+        out.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'help_ack.json'))
+    except Exception:
+        pass
+    return out
+
+
+def _help_ack_file():
+    """兼容旧调用:返回首选路径。"""
+    c = _help_ack_candidates()
+    return c[0] if c else ''
+
+
+def _help_ack_done():
+    """是否已完整读过帮助(只要任一候选位置有记录即算)。"""
+    for p in _help_ack_candidates():
+        try:
+            with open(p, encoding='utf-8') as f:
+                if json.load(f).get('ack'):
+                    return True
+        except Exception:
+            continue
+    return False
+
+
+def _mark_help_ack():
+    """把确认写进第一个可写位置;全部失败时记录到工作区日志便于排查。"""
+    data = {'ack': True, 'version': APP_VERSION}
+    errs = []
+    for p in _help_ack_candidates():
+        try:
+            d = os.path.dirname(os.path.abspath(p))
+            if d and not os.path.isdir(d):
+                os.makedirs(d, exist_ok=True)
+            with open(p, 'w', encoding='utf-8') as f:
+                json.dump(data, f)
+            return p
+        except Exception as e:
+            errs.append('%s -> %s: %s' % (p, type(e).__name__, e))
+    try:
+        log = os.path.join(os.getcwd(), 'help_ack_error.log')
+        with open(log, 'a', encoding='utf-8') as f:
+            f.write('\n'.join(errs) + '\n')
+    except Exception:
+        pass
+    return ''
+
+
+def first_run_help_gate(parent, on_done=None):
+    """首次安装后:必须把帮助拉到最底部才能继续使用。"""
+    if os.environ.get('MANGA_SKIP_HELP_GATE') == '1' or _help_ack_done():
+        if on_done:
+            on_done()
+        return None
+    path = _help_file()
+    try:
+        text = open(path, encoding='utf-8').read()
+    except Exception as e:
+        text = '读取帮助文件失败:\n%s' % e
+    main_text, _, footer = text.partition('<!--FOOTER-->')
+
+    dlg = tk.Toplevel(parent)
+    dlg.title('首次使用 · 请先读完帮助')
+    w, h = 980, 780
+    try:
+        sw, sh = parent.winfo_screenwidth(), parent.winfo_screenheight()
+        dlg.geometry('%dx%d+%d+%d' % (w, h, max(0, (sw - w) // 2), max(0, (sh - h) // 2)))
+    except Exception:
+        dlg.geometry('%dx%d' % (w, h))
+    for fn in ('transient', 'grab_set', 'lift'):
+        try:
+            getattr(dlg, fn)(parent if fn == 'transient' else None) if fn == 'transient' else getattr(dlg, fn)()
+        except Exception:
+            pass
+    try:
+        dlg.protocol('WM_DELETE_WINDOW', lambda: None)  # 不允许关掉绕过
+    except Exception:
+        pass
+
+    bar = tk.Frame(dlg)
+    bar.pack(fill=tk.X, padx=10, pady=(10, 0))
+    tk.Label(bar, text='👋 第一次使用:请把下面的帮助**拉到最底部**,然后点「我已读完,开始使用」',
+             font=('Microsoft YaHei', 10, 'bold'), fg='#c04000', anchor='w', justify='left').pack(side=tk.LEFT)
+
+    frame = tk.Frame(dlg)
+    frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
+    sb = tk.Scrollbar(frame)
+    sb.pack(side=tk.RIGHT, fill=tk.Y)
+    txt = tk.Text(frame, width=1, wrap='char', font=('Microsoft YaHei', 10), yscrollcommand=sb.set)
+    txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    sb.config(command=txt.yview)
+    _render_markdown(txt, main_text)
+    txt.config(state='disabled')
+
+    # 底部灰色注明:固定在窗口最底部居中,不进正文滚动区
+    if footer.strip():
+        tk.Label(dlg, text=footer.strip(), fg='#999999', font=('Microsoft YaHei', 8),
+                 justify='center', anchor='center', wraplength=900).pack(
+            side=tk.BOTTOM, fill=tk.X, pady=(0, 6))
+
+    bottom = tk.Frame(dlg)
+    bottom.pack(fill=tk.X, padx=10, pady=(0, 10))
+    hint = tk.Label(bottom, text='⬇ 请继续向下滚动到最底部…', fg='#888', font=('Microsoft YaHei', 9))
+    hint.pack(side=tk.LEFT)
+    btn = tk.Button(bottom, text='我已读完,开始使用', width=18, state='disabled')
+    btn.pack(side=tk.RIGHT)
+
+    state = {'ok': False}
+
+    def check():
+        if state['ok']:
+            return
+        try:
+            first, last = txt.yview()
+            if last >= 0.995:
+                state['ok'] = True
+                hint.config(text='✅ 已读到最底部,可以开始使用了', fg='#1a7f37')
+                btn.config(state='normal')
+        except Exception:
+            pass
+        if not state['ok']:
+            dlg.after(300, check)
+
+    def finish():
+        _mark_help_ack()
+        try:
+            dlg.grab_release()
+        except Exception:
+            pass
+        dlg.destroy()
+        if on_done:
+            on_done()
+
+    btn.config(command=finish)
+    for seq in ('<MouseWheel>', '<Button-4>', '<Button-5>', '<KeyRelease>'):
+        try:
+            txt.bind(seq, lambda e: dlg.after(120, check), add='+')
+        except Exception:
+            pass
+    dlg.after(400, check)
+    return dlg
+
 
 
 # ---------------- OCR 兜底(视觉引擎)----------------
@@ -3077,11 +3554,35 @@ def _show_settings(parent, book_dir=None):
     cur = _load_settings()
     dlg = tk.Toplevel(parent)
     dlg.title('设置 · 视觉模型 / API  ' + APP_VERSION)
-    dlg.geometry('680x560')
+    dlg.geometry('760x680')
     dlg.transient(parent)
     tk.Label(dlg, text='视觉模型 / API(识图后端 · OpenAI 兼容)', font=('Microsoft YaHei', 11, 'bold')).pack(anchor='w', padx=12, pady=(12, 2))
     tk.Label(dlg, text='这里控制 DSH 识图用的视觉模型(modlens),改完即替换当前在用的那一家的 API。',
-             fg='#666', font=('Microsoft YaHei', 8)).pack(anchor='w', padx=12, pady=(0, 6))
+             fg='#666', font=('Microsoft YaHei', 8)).pack(anchor='w', padx=12, pady=(0, 2))
+    tk.Label(dlg, text='※ 嵌字工作区请在网页端「设置 → 嵌字工作区」指定;成品输出到工作区的 已完成/ 目录。',
+             fg='#cc7a00', font=('Microsoft YaHei', 8), anchor='w').pack(fill=tk.X, padx=12, pady=(0, 6))
+    # 当前项目位置(从工作台底部挪到设置里)
+    if book_dir:
+        try:
+            try:
+                with open(_ui_cfg_file(), encoding='utf-8') as _f:
+                    _ws = str((json.load(_f) or {}).get('workspaceDir') or '')
+            except Exception:
+                _ws = ''
+            _data = os.environ.get('MANGA_DATA_DIR') or book_dir
+            _name = os.path.basename(os.path.normpath(book_dir))
+            _lines = ['项目:' + _name, '数据:' + _data]
+            if _ws:
+                _lines.append('成品:' + os.path.join(_ws, '已完成', _name))
+            def _short(p, n=62):
+                p = str(p or '')
+                return p if len(p) <= n else (p[:20] + '…' + p[-(n - 21):])
+            for _ln in _lines:
+                tk.Label(dlg, text=_short(_ln), fg='#555', font=('Microsoft YaHei', 8),
+                         anchor='w').pack(fill=tk.X, padx=12)
+            tk.Frame(dlg, height=4).pack(fill=tk.X)
+        except Exception:
+            pass
     frm = tk.Frame(dlg)
     frm.pack(fill=tk.X, padx=12)
 
@@ -3110,12 +3611,34 @@ def _show_settings(parent, book_dir=None):
     tk.Label(uf, text='界面选项', width=10, anchor='w').pack(side=tk.LEFT)
     tk.Checkbutton(uf, text='记住上次路径(本端)', variable=v_remember).pack(side=tk.LEFT)
     tk.Checkbutton(uf, text='显示 DSH 侧边栏(双端共享)', variable=v_sidebar).pack(side=tk.LEFT, padx=(12, 0))
-    tk.Label(uf, text='关闭后侧边栏隐藏;之后启动嵌字流程需在 DSH 对话里手动请求(或重新打开侧边栏)',
-             fg='#cc7a00', font=('Microsoft YaHei', 8)).pack(side=tk.LEFT, padx=(6, 0))
+    tk.Label(uf, text='关闭后侧边栏隐藏', fg='#cc7a00', font=('Microsoft YaHei', 8)).pack(side=tk.LEFT, padx=(6, 0))
     uf2 = tk.Frame(frm)
     uf2.pack(fill=tk.X, pady=(2, 0))
     tk.Label(uf2, text='', width=10).pack(side=tk.LEFT)
     tk.Checkbutton(uf2, text='启动提示弹窗(双端共享,仅网页端显示)', variable=v_banner).pack(side=tk.LEFT)
+
+    # 缓存 / 模型管理(走 DSH 桥,与网页端同一套接口)
+    cf = tk.Frame(frm)
+    cf.pack(fill=tk.X, pady=(6, 0))
+    tk.Label(cf, text='缓存/模型', width=10, anchor='w').pack(side=tk.LEFT)
+    cache_msg = tk.Label(cf, text='', fg='#666', font=('Microsoft YaHei', 8), anchor='w')
+
+    def _cache_msg(t, color='#666'):
+        cache_msg.config(text=t, fg=color)
+
+    def do_clear_cache():
+        ok, d = _bridge_call('/manga-desk/cache/info')
+        if not ok:
+            _cache_msg('清理失败:' + str(d), '#cc0000'); return
+        keys = [it['key'] for it in (d.get('items') or []) if it.get('kind') == 'cache']
+        if not keys:
+            _cache_msg('没有可清理的缓存', '#666'); return
+        ok, r = _bridge_call('/manga-desk/cache/clear', {'keys': keys}, timeout=120)
+        _cache_msg(('已清理缓存,释放 %s MB' % r.get('freedMB')) if ok else ('清理失败:' + str(r)),
+                   '#2a7a2a' if ok else '#cc0000')
+
+    tk.Button(cf, text='清理缓存', command=do_clear_cache).pack(side=tk.LEFT, padx=(0, 6))
+    cache_msg.pack(side=tk.LEFT, padx=8)
 
     out = tk.Label(dlg, text='', fg='#333', font=('Microsoft YaHei', 9), wraplength=600, justify='left', anchor='w')
     out.pack(fill=tk.X, padx=12, pady=(8, 0))
@@ -3286,6 +3809,9 @@ def _show_settings(parent, book_dir=None):
              fg='#888', font=('Microsoft YaHei', 8)).pack(anchor='w', padx=12)
     tk.Label(dlg, text=APP_VERSION + ' · 本软件完全由 AI(DeepSeek Harness Agent)生成与编写。作者:YiDaWuYi',
              fg='#999999', font=('Microsoft YaHei', 8)).pack(side=tk.BOTTOM, pady=(0, 10))
+    # 按内容自动定高,避免底部按钮/说明被窗口裁掉(最大不超过 940)
+    dlg.update_idletasks()
+    dlg.geometry('760x%d' % max(560, min(940, dlg.winfo_reqheight())))
     e_model.focus_set()
     dlg.bind('<Escape>', lambda e: dlg.destroy())
 
