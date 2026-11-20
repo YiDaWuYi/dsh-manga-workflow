@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-manga-workflow',
   factory(require) {
   // 版本号(发布时同步 package.json / 桌面端 mark_tool.py)
-  const APP_VERSION = 'V1.14.2';
+  const APP_VERSION = 'V1.14.4';
 
     const React = require('react');
     const h = React.createElement;
@@ -203,7 +203,7 @@ window.__ModuleLoader__.load({
 
     function Marker({ folder, page, data, mode, setMode, kind, cover, gpu, dirMode,
                        size, autoSize, bodyStyle, sfxStyle, titleStyle, fontByKind,
-                       onBoxesChange, onTextEdit }) {
+                       onBoxesChange, onTextEdit, onRefresh, reloadTick }) {
       const [boxes, setBoxes] = React.useState([]);
       const [sel, setSel] = React.useState(null);
       const [downAt, setDownAt] = React.useState(null);
@@ -234,7 +234,7 @@ window.__ModuleLoader__.load({
         im.onerror = () => { if (!cancelled) setImgError('图片加载失败,请重试或换页'); };
         im.src = url;
         return () => { cancelled = true; };
-      }, [folder, page]);
+      }, [folder, page, reloadTick]);
 
       React.useEffect(() => { onBoxesChange && onBoxesChange(boxes); }, [boxes]);
 
@@ -433,6 +433,11 @@ window.__ModuleLoader__.load({
         h('div', { style: S.row },
           h('span', { style: S.muted }, `共 ${boxes.length} 框`),
           h('span', { style: { flex: 1 } }),
+          h('button', {
+            type: 'button', style: S.btn,
+            title: '只重新读取当前页的框/译文/图片(不重载面板)',
+            onClick: () => { if (onRefresh) onRefresh(); },
+          }, '⟳ 刷新本页'),
           h('button', { type: 'button', style: S.btn, onClick: undoLast, title: 'Ctrl+Z' }, '撤销'),
           h('button', { type: 'button', style: S.btnDanger, onClick: () => { pushUndo(boxes); setBoxes([]); } }, '清空本页'),
         ),
@@ -1699,6 +1704,7 @@ h('div', { style: S.row },
         try { return localStorage.getItem('manga-desk-page') || ''; } catch (e) { return ''; }
       });
       const [pageData, setPageData] = React.useState(null);
+      const [reloadTick, setReloadTick] = React.useState(0);   // 「刷新」按钮:同时重载图片
       // 切换会话/重载时保留界面(view + 当前页)
       React.useEffect(() => {
         try { localStorage.setItem('manga-desk-view', view); } catch (e) { /* ignore */ }
@@ -1815,6 +1821,21 @@ h('div', { style: S.row },
         }
       }
 
+      // 「⟳ 刷新本页」:只重读当前页的框/译文/图片,不重载整个面板
+      async function reloadPage() {
+        if (!folder || !page) return;
+        try {
+          const pg = await api(`/regions?folder=${encodeURIComponent(folder)}&page=${encodeURIComponent(page)}`);
+          setPageData({ ...pg, page });
+          textEdits.current.clear();
+          dirtyRef.current = false;
+          setReloadTick((n) => n + 1);   // 让图片也重新加载
+          setMsg('已刷新本页');
+        } catch (e) {
+          setMsg('刷新失败:' + String(e.message || e));
+        }
+      }
+
       async function refresh() {
         if (!folder) return;
         setLoading(true);
@@ -1838,6 +1859,7 @@ h('div', { style: S.row },
           setInfo(null);
         } finally {
           setLoading(false);
+          setReloadTick((n) => n + 1);   // 让本页图片也强制重载(外部重嵌后能看到新图)
         }
       }
 
@@ -2447,6 +2469,12 @@ h('div', { style: S.row },
               style: { ...S.btn, padding: '7px 14px', fontSize: '13px' },
               onClick: () => setView('help'),
             }, '帮助'),
+            h('button', {
+              type: 'button',
+              style: { ...S.btn, padding: '7px 14px', fontSize: '13px' },
+              title: '重新加载整个网页面板(安装/更新插件后用它,等同按 F5)',
+              onClick: () => { try { location.reload(); } catch (e) {} },
+            }, '⟳ 刷新面板'),
           ),
           msg ? h('div', { style: { color: '#ff8080', marginTop: '6px' } }, msg) : null,
           h('div', { style: { ...S.box, marginTop: '18px' } },
@@ -2756,6 +2784,8 @@ h('div', { style: S.row },
               textEdits.current.set(i, { orig, trans });
               markDirty();
             },
+            onRefresh: () => reloadPage(),
+            reloadTick,
           }) : null,
           h('div', { style: { ...S.muted, marginTop: '4px' } },
             '单击框 = 编辑属性(选中后改设置实时写回) · 双击框 = 编辑文字(原文/译文) · 左键拖框/自由框选 · 右键删框 · '
