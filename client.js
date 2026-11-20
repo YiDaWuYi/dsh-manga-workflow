@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-manga-workflow',
   factory(require) {
   // 版本号(发布时同步 package.json / 桌面端 mark_tool.py)
-  const APP_VERSION = 'V1.13.2';
+  const APP_VERSION = 'V1.13.3';
 
     const React = require('react');
     const h = React.createElement;
@@ -1358,6 +1358,9 @@ h('div', { style: S.row },
           h('div', { style: { fontWeight: 600, marginBottom: '6px' } }, '嵌字工作区(嵌字报告 / 对话汇报)'),
           h('div', { style: { ...S.muted, fontSize: '11px', marginBottom: '6px' } },
             '嵌字完成后会把结果报告写到这个目录(及其 manga_reports/),并生成待汇报队列;未设置时启动页/确认嵌字会提示。'),
+          h('div', { style: { ...S.muted, fontSize: '11px', marginBottom: '6px', whiteSpace: 'pre-wrap' } },
+            '📌 建议:在 DSH 里给漫画插件单独开一个工作区和一个会话,这里选你创建的那个工作区;\n'
+            + '后续把「交给 DSH 更正错误」也放在这个工作区的同一个会话里进行,报告与对话记录就能集中在一处。'),
           h('div', { style: S.row },
             h('input', {
               style: { ...S.input, minWidth: '320px' },
