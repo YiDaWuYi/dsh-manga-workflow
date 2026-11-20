@@ -169,6 +169,12 @@ def main():
                     ey = max(0, y - (eh - h) // 2)
                     s2, _ = fit_size(draw, zh, ew, eh, max(lo, base_sz), st, vertical, grow=grow)
                     s_fit = max(s_fit, s2, lo)
+                    cap = int(min(ew, eh) * 0.55)
+                    if cap > 8:
+                        s_fit = min(s_fit, cap)
+                    W, H = img.size
+                    ex = min(ex, max(0, W - ew))
+                    ey = min(ey, max(0, H - eh))
                     ok = (draw_vtext(draw, zh, ex, ey, ew, eh, s_fit, st) if vertical
                           else draw_htext(draw, zh, ex, ey, ew, eh, s_fit, st))
                 else:

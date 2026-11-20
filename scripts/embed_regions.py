@@ -166,7 +166,7 @@ def fit_size(draw, text, w, h, start, st, vertical, grow=False):
     lo_s = 18 if grow else 10  # 可读下限:拟声 18(小框也不缩太小),正文/标题 10
     hi_s = min(140, max(12, int(min(w, h) * 0.9)))
     if grow:
-        hi_s = max(hi_s, 28)   # 小框的拟声词也至少能到 28 号(允许溢出盖到框外)
+        hi_s = int(min(w, h) * 0.72) if hi_s > 0 else hi_s   # 小框的拟声词也至少能到 28 号(允许溢出盖到框外)
     def fits(s):
         return _fits_vertical(text, w, h, s) if vertical else _fits_horizontal(draw, text, w, h, s, st)
     if grow:
@@ -477,7 +477,7 @@ def main():
                 if bad:
                     # 最小字号仍放不下:允许局部溢出(可读优先),不再继续缩小
                     if grow:
-                        ew, eh = int(w * 1.9), int(h * 1.55)
+                        ew, eh = int(w * 1.22), int(h * 1.12)
                     else:
                         ew, eh = int(w * 1.12), int(h * 1.08)
                     ex = max(0, x - (ew - w) // 2)
@@ -490,6 +490,15 @@ def main():
                                             st, vertical, grow=grow)
                         if s2 > size:
                             size = s2
+                        cap = int(min(ew, eh) * 0.55)
+                        if cap > 8:
+                            size = min(size, cap)
+                        try:
+                            W, H = img.size
+                            ex = min(ex, max(0, W - ew))
+                            ey = min(ey, max(0, H - eh))
+                        except Exception:
+                            pass
                     except Exception:
                         pass
                     ok = (draw_vtext(draw, zh, ex, ey, ew, eh, size, st) if vertical
