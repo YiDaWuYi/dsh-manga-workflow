@@ -18,10 +18,36 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import cv2
 import math
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 def load_font(size, bold=False, art=False, family=None):
     return styles.load_font(size, bold, art, family)
+
+# ---- 符号字符回退 ----
+# 中文字体缺 ♡ ♥ ❤ ♪ 等符号字形(会画成空心方块),这些字符改用 Segoe UI Symbol 绘制。
+SYM_CHARS = set('♡♥❤❥♪♫♬✦✧')
+SYM_FONT_CANDIDATES = [
+    'C:/Windows/Fonts/seguisym.ttf',
+    'C:/Windows/Fonts/SegUISym.ttf',
+    'C:/Windows/Fonts/arial.ttf',
+]
+_sym_font_cache = {}
+
+
+def symbol_font(size):
+    """返回可绘制符号的字体对象;找不到则返回 None。"""
+    if size in _sym_font_cache:
+        return _sym_font_cache[size]
+    f = None
+    for cp in SYM_FONT_CANDIDATES:
+        if os.path.exists(cp):
+            try:
+                f = ImageFont.truetype(cp, size)
+                break
+            except Exception:
+                f = None
+    _sym_font_cache[size] = f
+    return f
 
 def inpaint_rect(arr, x, y, w, h):
     H, W = arr.shape[:2]
@@ -118,6 +144,11 @@ def estimate_font_size(arr, b, margin=2):
 
 
 def _draw_char(draw, xy, ch, font, st, s):
+    if ch in SYM_CHARS:
+        sf = symbol_font(s)
+        if sf is not None:
+            styles.draw_styled(draw, xy, ch, sf, st, s)
+            return
     styles.draw_styled(draw, xy, ch, font, st, s)
 
 
@@ -252,7 +283,17 @@ def draw_htext(draw, text, x, y, w, h, size, st):
     font = load_font(s, bool(st.get('bold')), bool(st.get('art')), st.get('font'))
     cy = y + 3
     for ln in lines:
-        _draw_char(draw, (x + 3, cy), ln, font, st, s)
+        cx = x + 3
+        for ch in ln:
+            _draw_char(draw, (cx, cy), ch, font, st, s)
+            # 逐字符推进,符号字符用符号字体量宽
+            f_ch = symbol_font(s) if ch in SYM_CHARS else font
+            if f_ch is None:
+                f_ch = font
+            try:
+                cx += draw.textlength(ch, font=f_ch)
+            except Exception:
+                cx += s
         cy += s + 4
     return fits
 
@@ -448,6 +489,19 @@ def main():
                         styles.paint_cover(d2, r, styles.sample_cover_color(src_img, r),
                                            shape='ellipse' if _tight else 'rect')
                     arr = np.array(tmp)
+        # 短拟声直盖:先智能清除框内原日文白描边字(不涂色块,只修补白像素)
+        try:
+            for _i3, _r3 in enumerate(regions[page]):
+                _zh3 = zh_list[_i3] if _i3 < len(zh_list) else ''
+                if not _zh3 or _r3.get('auto'):
+                    continue
+                if styles.cover_mode(_r3) != 'overlay':
+                    continue
+                if len(str(_zh3).strip()) > 5:
+                    continue
+                pass  # 不处理原字,直接覆盖(用户要求)
+        except Exception as _e:
+            print('[智能清字] 失败:', _e)
         img2 = Image.fromarray(arr)
         draw = ImageDraw.Draw(img2)
         # 第二遍:写中文(只写有译文的框)

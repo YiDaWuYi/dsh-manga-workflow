@@ -88,6 +88,7 @@ def main():
             continue
         base = Image.open(res).convert('RGB')
         # 色块覆盖:用原图框边缘中位色盖住原文(LaMa 只负责需要修复的框)
+        _light_cover = set()
         try:
             _src_img = None
             for ext in ('.webp', '.png', '.jpg', '.jpeg', '.bmp'):
@@ -120,7 +121,13 @@ def main():
                                                 grow=True, cap_ratio=0.9, lo=18)
                         if _bad:
                             continue   # 直盖:跳过色块
-                        styles.paint_cover(_d2, _r, styles.sample_cover_color(_src_img, _r),
+                        _col = styles.sample_cover_color(_src_img, _r)
+                        try:
+                            if sum(_col) / 3.0 > 200:
+                                _light_cover.add(id(_r))
+                        except Exception:
+                            pass
+                        styles.paint_cover(_d2, _r, _col,
                                            shape='ellipse' if _tight else 'rect')
         except Exception as _e:
             print('[覆盖] 失败:', _e)
@@ -143,6 +150,23 @@ def main():
                 base = Image.fromarray(_arr)
         except Exception as _e:
             print('[普通抹除] 失败:', _e)
+        # 短拟声直盖:先智能清除框内原日文白描边字(不涂色块)
+        try:
+            import numpy as _np
+            _arr3 = _np.array(base)
+            _changed = False
+            for _i3, _r3 in enumerate(regions[page]):
+                _zh3 = trans[page][_i3] if _i3 < len(trans[page]) else ""
+                if not _zh3 or _r3.get('auto'):
+                    continue
+                if styles.cover_mode(_r3) != 'overlay':
+                    continue
+                if len(str(_zh3).strip()) > 5:
+                    continue
+                pass  # 不处理原字,直接覆盖(用户要求)
+            base = Image.fromarray(_arr3)
+        except Exception as _e:
+            print('[智能清字] 失败:', _e)
         draw = ImageDraw.Draw(base)
         zh_list = trans[page]
         # 用原图估每个框的原文字号(擦除前)
@@ -166,6 +190,10 @@ def main():
                 continue
             x, y, w, h = rr['x'], rr['y'], rr['w'], rr['h']
             st = styles.resolve(rr)                      # 样式预设(旧数据自动兼容)
+            if id(rr) in _light_cover and sum(st.get('fill') or (0, 0, 0)) / 3.0 > 170:
+                # 浅色色块上又用浅色字 → 自动改黑字白边,避免"看不见"
+                st = dict(st); st['fill'] = (0, 0, 0); st['stroke_fill'] = (255, 255, 255)
+                st['stroke'] = max(int(st.get('stroke') or 0), 1)
             size = rr.get('size', 20)
             if AUTO_SIZE and not rr.get('size_fixed') and src_arr is not None:
                 size = estimate_font_size(src_arr, rr)   # 自动检测原文字号

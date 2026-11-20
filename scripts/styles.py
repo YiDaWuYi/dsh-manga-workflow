@@ -353,3 +353,34 @@ def draw_styled(draw, xy, ch, font, st, s):
         draw.text(xy, ch, font=font, fill=fill, stroke_width=max(1, k), stroke_fill=sf or fill)
     else:
         draw.text(xy, ch, font=font, fill=fill, stroke_width=k, stroke_fill=sf)
+
+
+def smart_clear_white(arr, box, thresh=205, max_ratio=0.42):
+    """智能清除框内的白色原字(拟声词白描边字)。
+
+    只处理框内高亮低饱和像素,用周围纹理修补(cv2.INPAINT_TELEA),不涂色块、
+    不碰框外画面;白色占比过大(可能是白气泡)时跳过。
+    """
+    try:
+        import numpy as np
+        import cv2
+    except Exception:
+        return arr
+    try:
+        x, y = int(box.get('x', 0)), int(box.get('y', 0))
+        w, h = int(box.get('w', 0)), int(box.get('h', 0))
+        H, W = arr.shape[:2]
+        x0, y0 = max(0, x), max(0, y)
+        x1, y1 = min(W, x + w), min(H, y + h)
+        if x1 - x0 < 4 or y1 - y0 < 4:
+            return arr
+        crop = arr[y0:y1, x0:x1]
+        gray = crop if crop.ndim == 2 else cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
+        mask = ((gray >= thresh).astype(np.uint8)) * 255
+        if mask.mean() / 255.0 > max_ratio or mask.mean() < 0.01:
+            return arr
+        mask = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=2)
+        arr[y0:y1, x0:x1] = cv2.inpaint(crop, mask, 4, cv2.INPAINT_TELEA)
+        return arr
+    except Exception:
+        return arr
