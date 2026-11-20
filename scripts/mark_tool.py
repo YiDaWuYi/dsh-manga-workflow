@@ -2746,7 +2746,7 @@ def _style_preview_photo(style_id, w=54, h=30, font=''):
 
 
 # ---------------- 版本 ----------------
-APP_VERSION = 'V1.12.11'
+APP_VERSION = 'V1.13'
 
 # ---------------- 帮助窗口(程序内渲染,不依赖 .md 文件关联)----------------
 
@@ -3393,8 +3393,57 @@ def show_home():
                 pass
         threading.Thread(target=w, daemon=True).start()
 
+    def _dl_update(channel):
+        """下载稳定版/测试版安装包到工作区 dist/(或 ~/.manga-workflow/updates/)。"""
+        import urllib.request as _u
+        def w():
+            try:
+                req = _u.Request(
+                    'https://api.github.com/repos/YiDaWuYi/dsh-manga-workflow/releases?per_page=10',
+                    headers={'User-Agent': 'dsh-manga-update', 'Accept': 'application/vnd.github+json'})
+                with _u.urlopen(req, timeout=10) as r:
+                    arr = json.loads(r.read().decode('utf-8', 'replace'))
+                rels = [x for x in (arr if isinstance(arr, list) else [])
+                        if x and not x.get('draft') and not x.get('prerelease')]
+                rels.sort(key=lambda x: _vv(x.get('tag_name')), reverse=True)
+                if not rels:
+                    raise RuntimeError('没有可用发布')
+                rel = rels[0] if channel == 'beta' else (rels[1] if len(rels) > 1 else rels[0])
+                ver = str(rel.get('tag_name') or '').lstrip('Vv')
+                asset = next((a for a in rel.get('assets') or [] if str(a.get('name', '')).endswith('.tgz')), None)
+                if not asset:
+                    raise RuntimeError('该版本没有安装包')
+                ui = _load_tool_ui()
+                ws = str(ui.get('workspaceDir') or '').strip()
+                if not ws:
+                    ws = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'dist')
+                dest_dir = os.path.join(ws, 'dist')
+                os.makedirs(dest_dir, exist_ok=True)
+                dest = os.path.join(dest_dir, asset['name'])
+                with _u.urlopen(_u.Request(asset['browser_download_url'],
+                                           headers={'User-Agent': 'dsh-manga-update'}), timeout=120) as rr:
+                    open(dest, 'wb').write(rr.read())
+                msg = '已下载%s v%s\n\n%s\n\n在插件管理里「移除 → 安装」该文件即可更新。' % (
+                    '测试版' if channel == 'beta' else '稳定版', ver, dest)
+                root.after(0, lambda: messagebox.showinfo('下载完成', msg))
+            except Exception as e:
+                err = str(e)
+                root.after(0, lambda: messagebox.showerror('下载失败', err))
+        import threading
+        threading.Thread(target=w, daemon=True).start()
+
+    def _vv(x):
+        try:
+            return tuple(int(p) for p in str(x).lstrip('Vv').split('.'))
+        except Exception:
+            return (0,)
+
     tk.Button(vf2, text='检查更新', command=lambda: _ver_check(True),
               font=('Microsoft YaHei', 8)).pack(side=tk.LEFT, padx=(8, 0))
+    tk.Button(vf2, text='更新稳定版', command=lambda: _dl_update('stable'),
+              font=('Microsoft YaHei', 8)).pack(side=tk.LEFT, padx=(4, 0))
+    tk.Button(vf2, text='更新测试版', command=lambda: _dl_update('beta'),
+              font=('Microsoft YaHei', 8)).pack(side=tk.LEFT, padx=(4, 0))
     root.after(500, lambda: _ver_check(False))
 
     # 视觉引擎(识图)状态 + 配置入口:让 AI 看图必须先配好

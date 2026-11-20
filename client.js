@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-manga-workflow',
   factory(require) {
   // 版本号(发布时同步 package.json / 桌面端 mark_tool.py)
-  const APP_VERSION = 'V1.13';
+  const APP_VERSION = 'V1.13.1';
 
     const React = require('react');
     const h = React.createElement;
@@ -2365,7 +2365,32 @@ h('div', { style: S.row },
                   try { setVerInfo(await api('/version-check?force=1')); }
                   catch (e) { setVerInfo({ ok: false }); }
                 },
-              }, '检查更新')),
+              }, '检查更新'),
+              verInfo && verInfo.ok && verInfo.hasStableUpdate
+                ? h('button', {
+                    type: 'button', style: { ...S.btn, marginLeft: '6px', fontSize: '10px', padding: '2px 6px' },
+                    title: '下载稳定版安装包到工作区 dist/(然后在插件管理里更新)',
+                    onClick: async () => {
+                      try {
+                        const r = await api('/update-download', { channel: 'stable' });
+                        setMsg(r && r.ok ? '已下载稳定版 v' + r.version + ' → ' + r.path : '下载失败:' + (r && r.error));
+                      } catch (e) { setMsg('下载失败:' + String(e.message || e)); }
+                    },
+                  }, '更新稳定版')
+                : null,
+              verInfo && verInfo.ok && verInfo.hasBetaUpdate
+                ? h('button', {
+                    type: 'button', style: { ...S.btn, marginLeft: '6px', fontSize: '10px', padding: '2px 6px' },
+                    title: '下载测试版安装包到工作区 dist/(然后在插件管理里更新)',
+                    onClick: async () => {
+                      try {
+                        const r = await api('/update-download', { channel: 'beta' });
+                        setMsg(r && r.ok ? '已下载测试版 v' + r.version + ' → ' + r.path : '下载失败:' + (r && r.error));
+                      } catch (e) { setMsg('下载失败:' + String(e.message || e)); }
+                    },
+                  }, '更新测试版')
+                : null,
+            ),
           ),
           h('div', { style: S.row },
             h('input', {

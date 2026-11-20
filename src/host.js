@@ -1606,6 +1606,48 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
       }
     }
 
+    // 下载更新包:POST {channel: 'stable'|'beta'} → 下载对应 tarball 到 dist/ 或 ~/.manga-workflow/updates/
+    if (name === 'update-download' && req.method === 'POST') {
+      const raw = await readBody(req)
+      let body = {}
+      try { body = JSON.parse(raw || '{}') } catch {}
+      const channel = body.channel === 'beta' ? 'beta' : 'stable'
+      try {
+        const r = await fetch('https://api.github.com/repos/YiDaWuYi/dsh-manga-workflow/releases?per_page=10', {
+          headers: { 'User-Agent': 'dsh-manga-update', Accept: 'application/vnd.github+json' },
+        })
+        if (!r.ok) throw new Error('HTTP ' + r.status)
+        const arr = await r.json()
+        const cmp = (a, b) => {
+          const pa = String(a || '').split('.').map((x) => parseInt(x, 10) || 0)
+          const pb = String(b || '').split('.').map((x) => parseInt(x, 10) || 0)
+          for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0) }
+          return 0
+        }
+        const rels = (Array.isArray(arr) ? arr : [])
+          .filter((x) => x && !x.draft && !x.prerelease)
+          .sort((a, b) => cmp(String(b.tag_name || ''), String(a.tag_name || '')))
+        if (!rels.length) throw new Error('没有可用发布')
+        const rel = channel === 'beta' ? rels[0] : (rels[1] || rels[0])
+        const ver = String(rel.tag_name || '').replace(/^v/i, '')
+        const asset = (rel.assets || []).find((a) => /\.tgz$|\.tar\.gz$|\.zip$/i.test(a.name || ''))
+        if (!asset) throw new Error('该版本没有安装包资产')
+        const ws = String(readUiSettings().workspaceDir || '').trim()
+        const baseDir = ws || path.join(os.homedir(), '.manga-workflow', 'updates')
+        const destDir = ws ? path.join(ws, 'dist') : baseDir
+        mkdirSync(destDir, { recursive: true })
+        const dest = path.join(destDir, asset.name)
+        const dl = await fetch(asset.browser_download_url, { headers: { 'User-Agent': 'dsh-manga-update' } })
+        if (!dl.ok) throw new Error('下载失败 HTTP ' + dl.status)
+        const buf = Buffer.from(await dl.arrayBuffer())
+        writeFileSync(dest, buf)
+        return json(res, 200, { ok: true, channel, version: ver, path: dest, bytes: buf.length,
+          url: asset.browser_download_url, hint: '在插件管理里「移除 → 安装」该文件即可更新' })
+      } catch (e) {
+        return json(res, 200, { ok: false, error: String((e && e.message) || e) })
+      }
+    }
+
     // 嵌字工作区状态:GET → {dir, exists}
     if (name === 'workspace/status') {
       const dir = String(readUiSettings().workspaceDir || '').trim()
