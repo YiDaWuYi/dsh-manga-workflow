@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-manga-workflow',
   factory(require) {
   // 版本号(发布时同步 package.json / 桌面端 mark_tool.py)
-  const APP_VERSION = 'V1.12.7';
+  const APP_VERSION = 'V1.13';
 
     const React = require('react');
     const h = React.createElement;
@@ -764,9 +764,42 @@ window.__ModuleLoader__.load({
           }),
         ),
         h('div', { style: S.box },
+          h('div', { style: boxTitle }, '八·补充0、标准操作流程(照按键顺序做)'),
+          h(HelpLines, {
+            lines: [
+              '【0】鼠标放到任意按键上,会显示该按键的具体说明(title 提示)。',
+              '',
+              '【1】标注文字框',
+              '   · 手动:框选工具逐框画;',
+              '   · 自动:点「自动标框」→ 自动结果**必须人工更正**(单击=改属性,双击=改文字,右键=删框),',
+              '     确认无误再进入下一步;未确认的自动框(auto)默认不参与嵌字。',
+              '',
+              '【2】OCR 识别原文',
+              '   · 本地 OCR(日/韩/英),不联网;',
+              '   · 个别框识别失败/拟声词读错时,可开启 **OCR 兜底**:会调用**外部视觉引擎**(按框计费,约 ¥0.004~0.02/框)。',
+              '',
+              '【3】翻译',
+              '   · 免费引擎或 DSH 模型翻译(整本/本页);',
+              '   · 复杂单页可以用「单页识图翻译」或「单页拟声词识别填词」——',
+              '     这两个会调用**付费外部视觉引擎**(单价同上),点击前会显示预估金额。',
+              '',
+              '【4】自动校对:点「校对」;嵌字前还会自动跑一遍体检(数组对齐/无效译文/艺术字/同源拟声统一)。',
+              '',
+              '【5】人工校对:看校对报告(缺译文/结构疑点/溢出提示),双击可疑框改文字或重标。',
+              '',
+              '【6】出图(三选一):',
+              '   · 「确认嵌字」:体检 → 校对 → 页面内确认 → 嵌字 → 结果表单+预览;',
+              '   · 「DSH汉化模式」:整本视觉识别 + DSH 翻译 + 参与嵌字 + 校对(付费,先看预估);',
+              '   · 「交给对话」:提交后请在对话里**手动填写你的需求**(如“执行嵌字并汇报问题”)。',
+            ],
+            style: S.muted,
+          }),
+        ),
+        h('div', { style: S.box },
           h('div', { style: boxTitle }, '八·补充2、DSH 接管模式与花费'),
           h(HelpLines, {
             lines: [
+              '【提示】所有按键鼠标悬停会显示具体描述。',
               '【确认嵌字】(默认,面板内完成)',
               '· 自动体检:数组对齐、缺译文清单、数字/拉丁无效译文拦截、艺术字排除(标题豁免)',
               '· 再跑嵌字前校对 → 页面内黄色卡片确认 → 嵌字(脚本内自动再校对) → 表单 + 可切换预览',
@@ -1641,6 +1674,7 @@ h('div', { style: S.row },
       const [previewPg, setPreviewPg] = React.useState('');
       const [pfAuto, setPfAuto] = React.useState(false);   // 体检时让有译文的 auto 框参与
       const [activeJobId, setActiveJobId] = React.useState('');   // 当前任务(用于取消)
+      const [estInfo, setEstInfo] = React.useState(null);          // DSH 接管预估(常驻显示)
       const [log, setLog] = React.useState('');
       const [jumpNo, setJumpNo] = React.useState('');
       const jumpPage = () => {
@@ -1997,6 +2031,9 @@ h('div', { style: S.row },
           title: '拟声词识别填词(DSH 接管)',
           body: `本页拟声词框:${est ? est.boxes : '?'} 个(其中未翻译 ${est ? est.todo : '?'})\n`
             + `预计消耗:${money(est)}\n`
+            + `  · 视觉识别 ¥${est ? est.visionMin : '?'}~¥${est ? est.visionMax : '?'}`
+            + `  · DSH 翻译 ¥${est ? est.transCost : '?'}(实测 ¥0.00058/框)`
+            + `  · 本地嵌字 ¥0\n`
             + '流程:视觉引擎识别 → DSH 翻译 → 自动设为参与嵌字\n\n开始吗?',
           okText: '开始',
           onOk: async () => {
@@ -2012,7 +2049,10 @@ h('div', { style: S.row },
         setConfirmDlg({
           title: 'DSH 汉化模式(整本接管)',
           body: `整本框数:${est ? est.boxes : '?'} 个(未翻译 ${est ? est.todo : '?'})\n`
-            + `预计消耗:${money(est)}(仅视觉识别;DSH 翻译走额度)\n`
+            + `预计消耗:${money(est)}\n`
+            + `  · 视觉识别 ¥${est ? est.visionMin : '?'}~¥${est ? est.visionMax : '?'}`
+            + `  · DSH 翻译 ¥${est ? est.transCost : '?'}(实测 ¥0.00058/框)`
+            + `  · 本地嵌字 ¥0\n`
             + '分 4 阶段(会显示百分比进度):\n'
             + '  1) 视觉识别整本(0~58%)  2) DSH 翻译(58~87%)\n'
             + '  3) 设为参与嵌字(87~92%)  4) 校对(92~100%)\n'
@@ -2024,6 +2064,20 @@ h('div', { style: S.row },
           },
         });
       }
+
+      // 页面/文件夹变化时:拉取 DSH 接管预估,常驻显示在按钮旁
+      React.useEffect(() => {
+        if (!folder) { setEstInfo(null); return; }
+        let alive = true;
+        (async () => {
+          try {
+            const sfx = await api('/cost-estimate', { folder, page: page || null, scope: 'sfx' });
+            const all = await api('/cost-estimate', { folder, scope: 'all' });
+            if (alive) setEstInfo({ sfx, all });
+          } catch (e) { if (alive) setEstInfo(null); }
+        })();
+        return () => { alive = false; };
+      }, [folder, page]);
 
       // 单页识图翻译:当前页所有框交给视觉引擎读原文,再交 DSH 模型翻译
       async function visionPage() {
@@ -2068,7 +2122,10 @@ h('div', { style: S.row },
           setConfirmDlg({
             title: '交给对话执行嵌字',
             body: `整本:${(info && info.pageCount) || '?'} 页 / ${est ? est.boxes : '?'} 框\n`
-              + `预计消耗:${money(est)}(仅视觉识别;嵌字本身本地免费)\n`
+              + `预计消耗:${money(est)}\n`
+            + `  · 视觉识别 ¥${est ? est.visionMin : '?'}~¥${est ? est.visionMax : '?'}`
+            + `  · DSH 翻译 ¥${est ? est.transCost : '?'}(实测 ¥0.00058/框)`
+            + `  · 本地嵌字 ¥0\n`
               + '提交后请在本对话里说「执行嵌字」。\n\n提交吗?',
             okText: '提交',
             onOk: async () => {
@@ -2288,9 +2345,15 @@ h('div', { style: S.row },
             h('div', { style: { marginTop: '8px', fontSize: '11px' } },
               verInfo
                 ? (verInfo.ok
-                  ? (verInfo.latest && verInfo.current && verInfo.latest !== verInfo.current
+                  ? ((verInfo.hasStableUpdate || verInfo.hasBetaUpdate)
                     ? h('span', { style: { color: '#ffb020' } },
-                        '版本 v' + verInfo.current + ' · 有新版本 v' + verInfo.latest + ',建议更新' + (verInfo.url ? ':' + verInfo.url : ''))
+                        '版本 v' + verInfo.current + ' · '
+                        + (verInfo.hasStableUpdate
+                          ? '稳定版 v' + (verInfo.stable || '?') + ' 可更新 ✅'
+                          : '稳定版已是最新')
+                        + (verInfo.hasBetaUpdate
+                          ? ' · 测试版 v' + (verInfo.beta || verInfo.latest || '?') + ' 可选(测试)'
+                          : ''))
                     : h('span', { style: { color: '#7ac97a' } },
                         '版本 v' + (verInfo.current || '?') + ' · 已是最新'))
                   : h('span', { style: S.muted }, '版本检测失败(可手动再试)'))
@@ -2442,6 +2505,13 @@ h('div', { style: S.row },
               title: '整本:视觉识别 + DSH 翻译 + 校对',
               onClick: () => dshFull(),
             }, 'DSH汉化模式'),
+            estInfo && estInfo.all
+              ? h('span', { style: { ...S.muted, fontSize: '11px', marginLeft: '6px' },
+                  title: '视觉 ¥0.004~0.02/框 + DSH 翻译 ¥0.00058/框(实测) + 本地嵌字 ¥0' },
+                  '预估:本页拟声词 ' + (estInfo.sfx ? estInfo.sfx.boxes : 0) + ' 框 ¥'
+                  + (estInfo.sfx ? estInfo.sfx.yuanMin : '?') + '~¥' + (estInfo.sfx ? estInfo.sfx.yuanMax : '?')
+                  + ' · 整本 ' + estInfo.all.boxes + ' 框 ¥' + estInfo.all.yuanMin + '~¥' + estInfo.all.yuanMax)
+              : null,
             h('button', { type: 'button', style: S.btn, disabled: loading, onClick: () => run('proofread') }, '校对'),
             h('button', { type: 'button', style: S.btn, disabled: loading, onClick: () => run('embed') }, '嵌字'),
             h('button', {

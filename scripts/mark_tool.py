@@ -2322,16 +2322,35 @@ def _version_check(force=False):
     except Exception:
         cache = {}
     if (not force) and cache.get('date') == today and cache.get('latest'):
-        return {'ok': True, 'current': cur, 'latest': cache['latest'], 'url': cache.get('url', ''),
+        return {'ok': True, 'current': cur, 'latest': cache.get('latest', ''),
+                'stable': cache.get('stable', cache.get('latest', '')),
+                'beta': cache.get('beta', cache.get('latest', '')),
+                'url': cache.get('url', ''), 'stableUrl': cache.get('stableUrl', ''),
+                'hasBetaUpdate': cache.get('hasBetaUpdate'), 'hasStableUpdate': cache.get('hasStableUpdate'),
                 'cached': True}
     req = urllib.request.Request(
-        'https://api.github.com/repos/YiDaWuYi/dsh-manga-workflow/releases/latest',
+        'https://api.github.com/repos/YiDaWuYi/dsh-manga-workflow/releases?per_page=10',
         headers={'User-Agent': 'dsh-manga-version-check', 'Accept': 'application/vnd.github+json'})
     try:
         with urllib.request.urlopen(req, timeout=8) as r:
-            j = json.loads(r.read().decode('utf-8', 'replace'))
-        latest = str(j.get('tag_name') or '').lstrip('Vv')
-        out = {'date': today, 'latest': latest, 'url': j.get('html_url', ''), 'checkedAt': today}
+            arr = json.loads(r.read().decode('utf-8', 'replace'))
+        def _v(x):
+            try:
+                return tuple(int(p) for p in str(x).lstrip('Vv').split('.'))
+            except Exception:
+                return (0,)
+        rels = [x for x in (arr if isinstance(arr, list) else [])
+                if x and not x.get('draft') and not x.get('prerelease')]
+        rels = sorted(rels, key=lambda x: _v(x.get('tag_name')), reverse=True)
+        if not rels:
+            raise RuntimeError('no releases')
+        beta = str(rels[0].get('tag_name') or '').lstrip('Vv')
+        stable_rel = rels[1] if len(rels) > 1 else rels[0]
+        stable = str(stable_rel.get('tag_name') or '').lstrip('Vv')
+        out = {'date': today, 'latest': beta, 'beta': beta, 'stable': stable,
+               'url': rels[0].get('html_url', ''), 'stableUrl': stable_rel.get('html_url', ''),
+               'hasBetaUpdate': _v(beta) > _v(cur), 'hasStableUpdate': _v(stable) > _v(cur),
+               'checkedAt': today}
         try:
             d = os.path.dirname(_version_cache_file())
             if d and not os.path.isdir(d):
@@ -2340,7 +2359,7 @@ def _version_check(force=False):
                 json.dump(out, f, ensure_ascii=False, indent=1)
         except Exception:
             pass
-        return {'ok': True, 'current': cur, 'latest': latest, 'url': out['url'], 'cached': False}
+        return {'ok': True, 'current': cur, 'cached': False, **out}
     except Exception as e:
         return {'ok': False, 'current': cur, 'error': str(e), 'latest': cache.get('latest', '')}
 
@@ -2727,7 +2746,7 @@ def _style_preview_photo(style_id, w=54, h=30, font=''):
 
 
 # ---------------- 版本 ----------------
-APP_VERSION = 'V1.12.3'
+APP_VERSION = 'V1.12.11'
 
 # ---------------- 帮助窗口(程序内渲染,不依赖 .md 文件关联)----------------
 
@@ -3349,9 +3368,13 @@ def show_home():
     def _ver_done(res):
         try:
             if res.get('ok'):
-                latest = str(res.get('latest') or '')
-                if latest and latest != str(res.get('current') or ''):
-                    _vlab.config(text='版本 %s · 有新版本 v%s,建议更新' % (APP_VERSION, latest), fg='#cc7a00')
+                stable = str(res.get('stable') or res.get('latest') or '')
+                beta = str(res.get('beta') or res.get('latest') or '')
+                cur = str(res.get('current') or '')
+                if res.get('hasStableUpdate'):
+                    _vlab.config(text='版本 %s · 稳定版 v%s 可更新 ✅(测试版 v%s 可选)' % (cur, stable, beta), fg='#cc7a00')
+                elif res.get('hasBetaUpdate'):
+                    _vlab.config(text='版本 %s · 稳定版已最新,测试版 v%s 可选' % (cur, beta), fg='#7a7a7a')
                 else:
                     _vlab.config(text='版本 %s · 已是最新' % APP_VERSION, fg='#2a7a2a')
             else:

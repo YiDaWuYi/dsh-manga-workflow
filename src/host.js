@@ -1398,11 +1398,20 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
         }
         if (hit) pagesHit += 1
       }
-      // 视觉识别约 0.01~0.09 元/框(随裁剪大小与模型);DSH 翻译不额外计费
-      const yuanMin = Math.round(boxes * 0.01 * 100) / 100
-      const yuanMax = Math.round(boxes * 0.09 * 100) / 100
+      // 实测标准(2026-11-20,本书):
+      //   视觉识别 ≈ ¥0.004~0.02/框(取决于模型/裁剪大小;免费模型可为 0)
+      //   DSH 翻译  ≈ ¥0.00058/框(实测 19 框 ¥0.011,输入 55/输出 34 tokens/框)
+      //   本地嵌字  = ¥0
+      const visMin = 0.004, visMax = 0.02
+      const trUnit = 0.00058
+      const visionMin = Math.round(boxes * visMin * 100) / 100
+      const visionMax = Math.round(boxes * visMax * 100) / 100
+      const transCost = Math.round(boxes * trUnit * 10000) / 10000
+      const yuanMin = Math.round((visionMin + transCost) * 100) / 100
+      const yuanMax = Math.round((visionMax + transCost) * 100) / 100
       return json(res, 200, { ok: true, scope, pages: pagesHit, boxes, todo,
-        yuanMin, yuanMax, note: '视觉识别按框计费;DSH 翻译走 DSH 额度,不额外计费' })
+        visionMin, visionMax, transCost, yuanMin, yuanMax,
+        note: '视觉识别约 ¥0.004~0.02/框;DSH 翻译约 ¥0.00058/框;本地嵌字免费' })
     }
 
     function setProgress(job, pct, label) {
@@ -1558,21 +1567,42 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
       try { cache = JSON.parse(readFileSync(cacheFile, 'utf8')) } catch (e) { cache = {} }
       if (!force && cache && cache.date === today && cache.latest) {
         return json(res, 200, { ok: true, current: cur, latest: cache.latest,
-          url: cache.url || '', checkedAt: cache.checkedAt || '', cached: true })
+          stable: cache.stable || cache.latest, beta: cache.beta || cache.latest,
+          url: cache.url || '', stableUrl: cache.stableUrl || cache.url || '',
+          hasBetaUpdate: cache.hasBetaUpdate === true, hasStableUpdate: cache.hasStableUpdate === true,
+          checkedAt: cache.checkedAt || '', cached: true })
       }
       try {
-        const r = await fetch('https://api.github.com/repos/YiDaWuYi/dsh-manga-workflow/releases/latest', {
+        const r = await fetch('https://api.github.com/repos/YiDaWuYi/dsh-manga-workflow/releases?per_page=10', {
           headers: { 'User-Agent': 'dsh-manga-version-check', Accept: 'application/vnd.github+json' },
         })
         if (!r.ok) throw new Error('HTTP ' + r.status)
-        const j = await r.json()
-        const latest = String(j.tag_name || '').replace(/^v/i, '')
-        const out = { date: today, latest, url: j.html_url || '', checkedAt: new Date().toISOString() }
-        try { mkdirSync(path.dirname(cacheFile), { recursive: true }); writeFileSync(cacheFile, JSON.stringify(out, null, 1)) } catch (e) {}
-        return json(res, 200, { ok: true, current: cur, latest, url: out.url, checkedAt: out.checkedAt, cached: false })
+        const arr = await r.json()
+        const cmp = (a, b) => {
+          const pa = String(a || '').split('.').map((x) => parseInt(x, 10) || 0)
+          const pb = String(b || '').split('.').map((x) => parseInt(x, 10) || 0)
+          for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0) }
+          return 0
+        }
+        const rels = (Array.isArray(arr) ? arr : [])
+          .filter((x) => x && !x.draft && !x.prerelease)
+          .map((x) => ({ ver: String(x.tag_name || '').replace(/^v/i, ''), url: x.html_url || '' }))
+          .filter((x) => /^\d+\.\d+\.\d+$/.test(x.ver))
+          .sort((a, b) => cmp(b.ver, a.ver))
+        if (!rels.length) throw new Error('no releases')
+        // 最新发布 = 测试版;往前两个版本 = 稳定版
+        const beta = rels[0]
+        const stable = rels[1] || rels[0]
+        const out = { date: today, latest: beta.ver, beta: beta.ver, stable: stable.ver,
+          url: beta.url, stableUrl: stable.url,
+          hasBetaUpdate: cmp(beta.ver, cur) > 0,
+          hasStableUpdate: cmp(stable.ver, cur) > 0,
+          checkedAt: new Date().toISOString() }
+        try { mkdirSync(path.dirname(cacheFile), { recursive: true }); writeFileSync(cacheFile, JSON.stringify(out, null, 1), 'utf8') } catch (e) { /* ignore */ }
+        return json(res, 200, { ok: true, current: cur, cached: false, ...out })
       } catch (e) {
         return json(res, 200, { ok: false, current: cur, error: String((e && e.message) || e),
-          latest: cache.latest || '', cached: !!cache.latest })
+          latest: cache.latest || '', stable: cache.stable || '', cached: true })
       }
     }
 
