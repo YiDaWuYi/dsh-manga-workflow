@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-manga-workflow',
   factory(require) {
   // 版本号(发布时同步 package.json / 桌面端 mark_tool.py)
-  const APP_VERSION = 'V1.12.3';
+  const APP_VERSION = 'V1.12.5';
 
     const React = require('react');
     const h = React.createElement;
@@ -784,7 +784,9 @@ window.__ModuleLoader__.load({
               '· DSH 翻译走 DSH 额度,不额外计费;本地嵌字免费',
               '· 三个入口(拟声词识别填词 / DSH汉化模式 / 交给对话)都会先弹确认卡片显示框数与 ¥ 区间',
               '',
-              '【auto 框】自动标框产生的框默认不参与嵌字;可用「本页auto→参与 / 仅补有译文的 / 全书auto参与」批量处理,',
+              '【取消当前任务】工作台新增按钮:终止正在运行的 OCR / 翻译 / 校对 / 嵌字 / DSH 接管任务',
+        '(会杀进程树,任务状态变为「已取消」;任务结束后按钮会提示没有运行中的任务)。',
+        '【auto 框】自动标框产生的框默认不参与嵌字;可用「本页auto→参与 / 仅补有译文的 / 全书auto参与」批量处理,',
               '或勾「体检时auto参与」让体检自动把有译文的 auto 框纳入。',
               '【嵌字工作区】设置里指定目录:嵌字报告写入工作区 manga_reports/;未设置时启动页会提示。',
             ],
@@ -1638,6 +1640,7 @@ h('div', { style: S.row },
       const [confirmDlg, setConfirmDlg] = React.useState(null);
       const [previewPg, setPreviewPg] = React.useState('');
       const [pfAuto, setPfAuto] = React.useState(false);   // 体检时让有译文的 auto 框参与
+      const [activeJobId, setActiveJobId] = React.useState('');   // 当前任务(用于取消)
       const [log, setLog] = React.useState('');
       const [jumpNo, setJumpNo] = React.useState('');
       const jumpPage = () => {
@@ -1917,6 +1920,7 @@ h('div', { style: S.row },
 
       async function runJob(step) {
         const { jobId } = await api('/run', { folder, step });
+        setActiveJobId(jobId);
         let lastLog = '';
         for (;;) {
           await new Promise((r) => setTimeout(r, 1200));
@@ -1960,6 +1964,7 @@ h('div', { style: S.row },
         setLoading(true);
         try {
           const { jobId } = await api(pathUrl, body);
+          setActiveJobId(jobId);
           let lastLog = '';
           for (;;) {
             await new Promise((r) => setTimeout(r, 1200));
@@ -1970,7 +1975,8 @@ h('div', { style: S.row },
             }
             if (j.status !== 'running') {
               setLog(`[${label}] exit=${j.code}\n${j.log || ''}`);
-              setMsg(`${label}:${j.code === 0 ? '完成' : '失败'}`);
+              setMsg(`${label}:${j.code === 0 ? '完成' : (j.status === 'cancelled' ? '已取消' : '失败')}`);
+              setActiveJobId('');
               break;
             }
           }
@@ -2028,6 +2034,7 @@ h('div', { style: S.row },
           setLog('单页识图翻译:0% · 视觉识别');
           setMsg('单页识图翻译:0% · 视觉识别');
           const { jobId } = await api('/vision-page', { folder, page });
+          setActiveJobId(jobId);
           let lastLog = '';
           for (;;) {
             await new Promise((r) => setTimeout(r, 1200));
@@ -2448,6 +2455,24 @@ h('div', { style: S.row },
               title: '把请求写到工作区,在本对话里说「执行嵌字」后由 DSH 执行',
               onClick: () => { try { embedToChat(); } catch (e) { setMsg('提交异常:' + String(e)); } },
             }, '交给对话'),
+            h('button', {
+              type: 'button', style: S.btnDanger || S.btn,
+              title: '终止正在运行的 OCR / 翻译 / 校对 / 嵌字 / DSH 任务',
+              onClick: async () => {
+                try {
+                  const r = await api('/cancel', { jobId: activeJobId || null });
+                  if (r && r.ok) {
+                    setMsg('已请求取消任务' + (r.killed ? '(终止 ' + r.killed + ' 个进程)' : ''));
+                    setLog((l) => l + '\n[取消] 已请求取消:' + r.jobId);
+                  } else {
+                    setMsg('当前没有正在运行的任务');
+                  }
+                  setActiveJobId('');
+                } catch (e) {
+                  setMsg('取消失败:' + String(e.message || e));
+                }
+              },
+            }, '取消当前任务'),
           ),
         ) : null,
         msg ? h('div', { style: { ...S.muted, marginBottom: '6px' } }, msg) : null,

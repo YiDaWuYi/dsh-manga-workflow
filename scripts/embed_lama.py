@@ -12,7 +12,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from embed_regions import draw_vtext, draw_htext, estimate_font_size, detect_vertical, inpaint_rect, inpaint_mask
+from embed_regions import draw_vtext, draw_htext, estimate_font_size, detect_vertical, inpaint_rect, inpaint_mask, fit_size
 import styles
 
 IOPAINT = os.path.join(BASE, '_venv', 'Scripts', 'iopaint.exe')
@@ -153,12 +153,27 @@ def main():
                 size = estimate_font_size(src_arr, rr)   # 自动检测原文字号
             _v = detect_vertical(src_arr, rr) if (AUTO_DIR and src_arr is not None) else None
             vertical = _v if isinstance(_v, bool) else bool(rr.get('vertical', True))
-            if styles.kind_of(rr) == 'title':
+            kind = styles.kind_of(rr)
+            if kind == 'title':
                 styles.draw_title(draw, zh, rr, size, st)
-            elif vertical:
-                draw_vtext(draw, zh, x, y, w, h, size, st)
             else:
-                draw_htext(draw, zh, x, y, w, h, size, st)
+                # 与 embed_regions 一致:可读下限 + 放不下时允许局部溢出并重算字号
+                grow = (kind == 'plain') and AUTO_SIZE
+                base_sz = int(size or 20)
+                s_fit, bad = fit_size(draw, zh, w, h, base_sz, st, vertical, grow=grow)
+                if bad:
+                    lo = 18 if grow else 10
+                    ew, eh = ((int(w * 1.9), int(h * 1.55)) if grow
+                              else (int(w * 1.12), int(h * 1.08)))
+                    ex = max(0, x - (ew - w) // 2)
+                    ey = max(0, y - (eh - h) // 2)
+                    s2, _ = fit_size(draw, zh, ew, eh, max(lo, base_sz), st, vertical, grow=grow)
+                    s_fit = max(s_fit, s2, lo)
+                    ok = (draw_vtext(draw, zh, ex, ey, ew, eh, s_fit, st) if vertical
+                          else draw_htext(draw, zh, ex, ey, ew, eh, s_fit, st))
+                else:
+                    ok = (draw_vtext(draw, zh, x, y, w, h, s_fit, st) if vertical
+                          else draw_htext(draw, zh, x, y, w, h, s_fit, st))
         base.save(os.path.join(out_dir, page + '.png'))
         n += 1
     # 把未翻译的页(封面/版权页等)也转成 PNG 带上,保证整本完整

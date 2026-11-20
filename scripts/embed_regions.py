@@ -163,8 +163,10 @@ def fit_size(draw, text, w, h, start, st, vertical, grow=False):
     """
     text = text or ''
     start = max(6, int(start or 20))
-    lo_s = 9 if grow else 6   # 拟声词不低于 9 号,避免小到看不清
+    lo_s = 18 if grow else 10  # 可读下限:拟声 18(小框也不缩太小),正文/标题 10
     hi_s = min(140, max(12, int(min(w, h) * 0.9)))
+    if grow:
+        hi_s = max(hi_s, 28)   # 小框的拟声词也至少能到 28 号(允许溢出盖到框外)
     def fits(s):
         return _fits_vertical(text, w, h, s) if vertical else _fits_horizontal(draw, text, w, h, s, st)
     if grow:
@@ -472,12 +474,24 @@ def main():
                 size = new_size
                 if bad:
                     overflow.append((i, zh))
-                if bad and grow:
-                    # 拟声词:允许少量溢出(约 18% 宽 / 6% 高),而不是缩成小字
-                    ew, eh = int(w * 1.18), int(h * 1.06)
+                if bad:
+                    # 最小字号仍放不下:允许局部溢出(可读优先),不再继续缩小
+                    if grow:
+                        ew, eh = int(w * 1.9), int(h * 1.55)
+                    else:
+                        ew, eh = int(w * 1.12), int(h * 1.08)
                     ex = max(0, x - (ew - w) // 2)
                     ey = max(0, y - (eh - h) // 2)
-                    size = max(size, 9)
+                    size = max(size, lo_s)
+                    # 关键:按扩大后的区域重新算字号(拟声词可放大到填满扩展区),
+                    # 否则小框里的拟声词会一直卡在下限字号,看起来特别小。
+                    try:
+                        s2, bad2 = fit_size(draw, zh, ew, eh, max(lo_s, int(r.get('size', 20) or 20)),
+                                            st, vertical, grow=grow)
+                        if s2 > size:
+                            size = s2
+                    except Exception:
+                        pass
                     ok = (draw_vtext(draw, zh, ex, ey, ew, eh, size, st) if vertical
                           else draw_htext(draw, zh, ex, ey, ew, eh, size, st))
                 elif vertical:

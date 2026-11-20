@@ -42,7 +42,9 @@ function listPages(folder) {
     .map((f) => ({ page: f.replace(/\.[^.]+$/, ''), file: f }))
 }
 
-function runProcess(pythonPath, args, env, onData) {
+const jobChildren = new Map()   // jobId -> Set<ChildProcess>(模块级,取消任务时杀进程树)
+
+function runProcess(pythonPath, args, env, onData, jobId) {
   return new Promise((resolve) => {
     let out = ''
     let err = ''
@@ -55,6 +57,12 @@ function runProcess(pythonPath, args, env, onData) {
     let child
     try {
       child = spawn(pythonPath, args, { env: { ...process.env, ...env }, windowsHide: true })
+      if (jobId) {
+        let st = jobChildren.get(jobId)
+        if (!st) { st = new Set(); jobChildren.set(jobId, st) }
+        st.add(child)
+        child.on('close', () => { try { st.delete(child) } catch (e) { /* ignore */ } })
+      }
     } catch (e) {
       finish(-1)
       err = String(e)
@@ -799,7 +807,7 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
     try { if (existsSync(BRIDGE_FILE)) unlinkSync(BRIDGE_FILE) } catch (e) { /* ignore */ }
   }
 
-  async function runStep(folder, step, onData) {
+  async function runStep(folder, step, onData, jobId) {
     const env = { ...runtimeEnv, MANGA_ENV_DIR: envDirCfg() }
     let args = null
     let label = step
@@ -848,7 +856,7 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
       return { code: -1, out: '', err: `未知步骤: ${step}` }
     }
     if (!existsSync(args[0])) return { code: -1, out: '', err: `找不到脚本: ${args[0]}` }
-    const r = await runProcess(pythonPath, args, env, onData)
+    const r = await runProcess(pythonPath, args, env, onData, jobId)
     let out = r.out
     let err = r.err
     let code = r.code
@@ -900,7 +908,7 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
           const hdr = `\n--- OCR 兜底(mode=${oc.mode}, 上限 ${oc.maxPerBook} 框) ---\n`
           if (onData) onData(hdr)
           out += hdr
-          const r2 = await runProcess(pythonPath, fbArgs, env, onData)
+          const r2 = await runProcess(pythonPath, fbArgs, env, onData, jobId)
           out += '\n' + r2.out
           err += r2.err
           if (r2.code !== 0) {
@@ -1334,6 +1342,36 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
       } catch (e) { return json(res, 500, { ok: false, error: String(e) }) }
     }
 
+    // 取消当前任务:POST {jobId?} → 杀进程树并标记 cancelled
+    if (name === 'cancel' && req.method === 'POST') {
+      const raw = await readBody(req)
+      let body = {}
+      try { body = JSON.parse(raw || '{}') } catch {}
+      let target = body.jobId ? jobs.get(body.jobId) : null
+      if (!target) {
+        for (const j of jobs.values()) {
+          if (j.status === 'running') { target = j; break }
+        }
+      }
+      if (!target || target.status !== 'running') {
+        return json(res, 200, { ok: false, error: '当前没有正在运行的任务' })
+      }
+      target.status = 'cancelled'
+      target.code = -1
+      target.log += '\n[取消] 用户取消了任务\n'
+      let killed = 0
+      const kids = jobChildren.get(target.id)
+      if (kids) {
+        for (const ch of kids) {
+          try {
+            spawn('taskkill', ['/T', '/F', '/PID', String(ch.pid)], { windowsHide: true })
+            killed += 1
+          } catch (e) { /* ignore */ }
+        }
+      }
+      return json(res, 200, { ok: true, jobId: target.id, killed })
+    }
+
     // 预计消耗:POST {folder, page?, scope: 'sfx'|'all'} → 框数 + 预估费用
     if (name === 'cost-estimate' && req.method === 'POST') {
       const raw = await readBody(req)
@@ -1415,7 +1453,7 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
           job.log += t
           const m = /进度\s+(\d+)\/(\d+)/.exec(t)
           if (m) setProgress(job, 5 + 65 * (Number(m[1]) / Math.max(1, Number(m[2]))), '拟声词识别 ' + m[1] + '/' + m[2])
-        })
+        }, job.id)
         job.log += '\n[拟声词识别] exit=' + r.code + '\n'
         setProgress(job, 72, '拟声词识别:完成')
         setProgress(job, 75, 'DSH 翻译中')
@@ -1456,7 +1494,7 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
             const m = /进度\s+(\d+)\/(\d+)/.exec(t)
             if (m) setProgress(job, 3 + 52 * (Number(m[1]) / Math.max(1, Number(m[2]))),
               '视觉识别 ' + m[1] + '/' + m[2])
-          })
+          }, job.id)
         job.log += '\n[DSH 汉化] 识别 exit=' + r1.code + '\n'
         setProgress(job, 58, '视觉识别完成')
         job.log += '[DSH 汉化] 2/4 DSH 翻译整本…\n'
@@ -1478,7 +1516,7 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
         job.log += '[DSH 汉化] 4/4 校对…\n'
         const r2 = await runProcess(pythonPath,
           [scriptPath('proofread.py'), dir, '--stage', 'pre', '--mode', 'both'], env,
-          (t) => { job.log += t })
+          (t) => { job.log += t }, job.id)
         job.log += '\n[DSH 汉化] 校对 exit=' + r2.code + '\n'
         setProgress(job, 100, '完成')
         job.code = 0
@@ -1578,7 +1616,7 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
         const args = [fb, dir, '--mode', 'all', '--force', '--page', page, '--short-auto', '0']
         if (config.lang) args.push('--lang', config.lang)
         job.log += '[识图] 用视觉引擎读本页所有框…\n'
-        const r = await runProcess(pythonPath, args, env, (t) => { job.log += t })
+        const r = await runProcess(pythonPath, args, env, (t) => { job.log += t }, job.id)
         job.log += '\n[识图] exit=' + r.code + '\n'
         job.log += '[DSH 翻译] 提交 DSH 模型翻译…\n'
         const n = await dshTranslateFolder(dir, page, (t) => { job.log += t }, true)
@@ -1836,11 +1874,13 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
       const id = 'j' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
       const job = { id, step: body.step, folder: body.folder, status: 'running', code: null, log: '', started: Date.now() }
       jobs.set(id, job)
-      runStep(body.folder, body.step, (t) => { job.log += t })
+      runStep(body.folder, body.step, (t) => { job.log += t }, job.id)
         .then((r) => {
-          job.status = 'done'
-          job.code = r.code
-          job.log = (r.out || '') + (r.err || '')
+          if (job.status === 'running') {
+            job.status = 'done'
+            job.code = r.code
+            job.log = (r.out || '') + (r.err || '')
+          }
         })
         .catch((e) => {
           job.status = 'error'
