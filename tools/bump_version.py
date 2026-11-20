@@ -178,8 +178,8 @@ def do_pack():
             os.remove(os.path.join(ROOT, old))
             print('删除旧包:', old)
     items = ['package.json', 'index.js', 'client.js', 'cordis.patch.yml', 'README.md',
-             'CHANGELOG.md', 'RELEASING.md', 'LICENSE', 'icon.svg', 'locale', 'docs',
-             'scripts', 'src']
+             'CHANGELOG.md', 'RELEASING.md', 'LICENSE', 'icon.svg', 'assets', 'locale',
+             'docs', 'scripts', 'src']
     with tarfile.open(tgz, 'w:gz') as tf:
         for name in items:
             p = os.path.join(ROOT, name)

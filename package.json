@@ -25,6 +25,8 @@
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
+    "./icon": "./assets/icon-custom.png",
+    "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json"
   },
   "files": [
@@ -35,6 +37,7 @@
     "scripts",
     "locale/*.json",
     "docs",
+    "assets",
     "icon.svg",
     "CHANGELOG.md",
     "RELEASING.md"
@@ -50,5 +53,6 @@
         "@deepseek-ai/dsh-client-ui-conversation"
       ]
     }
-  }
+  },
+  "icon": "./assets/icon-custom.png"
 }
