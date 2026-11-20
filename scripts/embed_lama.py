@@ -163,7 +163,7 @@ def main():
                 s_fit, bad = fit_size(draw, zh, w, h, base_sz, st, vertical, grow=grow)
                 if bad:
                     lo = 18 if grow else 10
-                    ew, eh = ((int(w * 1.9), int(h * 1.55)) if grow
+                    ew, eh = ((int(w * 1.22), int(h * 1.12)) if grow
                               else (int(w * 1.12), int(h * 1.08)))
                     ex = max(0, x - (ew - w) // 2)
                     ey = max(0, y - (eh - h) // 2)
