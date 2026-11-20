@@ -1,6 +1,6 @@
 {
   "name": "dsh-manga-workflow",
-  "version": "1.15.19",
+  "version": "1.15.20",
   "description": "Manga translation workflow for DeepSeek Harness: local Japanese/Korean/English OCR, GPU de-text and Chinese embedding tools, a sidebar workbench with a web box marker, an auto-detection benchmark, and a transient readiness banner.",
   "type": "module",
   "license": "MIT",
