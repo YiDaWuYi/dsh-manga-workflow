@@ -280,6 +280,12 @@ def main():
         return 2
     trans_file = os.path.join(_dd(src), 'trans.json')
     trans = _load(trans_file)
+    regions = _load(os.path.join(_dd(src), 'regions.json')) or {}
+    try:
+        from boxtools import is_noise_box
+    except Exception:
+        def is_noise_box(*a, **k):
+            return False
     pages = [only_page] if (only_page and only_page in ocr) else (
         [] if only_page else sorted(ocr.keys()))
 
@@ -303,6 +309,12 @@ def main():
         while len(out) < len(texts):
             out.append('')
         todo = [i for i, t in enumerate(texts) if str(t).strip() and not str(out[i]).strip()]
+        # 噪音框(页码/水印/UI/小碎框)不翻译,省额度也避免嵌到画面上
+        _bs = regions.get(page) or []
+        _skip = [i for i in todo if i < len(_bs) and is_noise_box(_bs[i], texts[i])]
+        if _skip:
+            todo = [i for i in todo if i not in _skip]
+            print('  [跳过噪音] %s 页 %d 框(页码/UI/小碎框)' % (page, len(_skip)), flush=True)
         if todo and ai_cfg:
             zh_list = ai_batch([str(texts[i]) for i in todo], ai_cfg, sl, page_hint=page)
             if zh_list:
@@ -340,6 +352,12 @@ def main():
     dead = [e for e in engines if _fail.get(e, 0) >= _FAIL_LIMIT]
     if dead:
         print('引擎跳过(连续失败):', ','.join(dead), flush=True)
+    try:
+        import provenance
+        provenance.log(_dd(src), 'translate', '翻译引擎: ' + ','.join(engines),
+                       list(pages), '译 %d 框 / 失败 %d' % (total, fail))
+    except Exception:
+        pass
     print(json.dumps({'pages': len(pages), 'translated': total, 'failed': fail,
                       'engines': engines, 'proxy': bool(proxy),
                       'skipped': dead}, ensure_ascii=False))

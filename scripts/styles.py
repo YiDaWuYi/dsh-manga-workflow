@@ -172,7 +172,7 @@ def paint_cover(draw, box, color, shape='rect', inset=0.10):
 
 
 def draw_title(draw, text, box, size, st=None):
-    """标题:居中 + 加粗 + 自动缩放适配框宽(单行)。"""
+    """标题:加粗 + 自动缩放适配框宽(单行);对齐方式由 box['align'] 决定(默认 center)。"""
     text = '' if text is None else str(text).strip()
     if not text:
         return False
@@ -196,18 +196,44 @@ def draw_title(draw, text, box, size, st=None):
         except Exception:
             tw = s * len(text)
     th = s
-    tx = x + (w - tw) / 2.0
+    _align = str((box or {}).get('align') or 'center').lower()
+    _pad = max(2.0, w * 0.02)
+    if _align == 'left':
+        tx = x + _pad
+    elif _align == 'right':
+        tx = x + w - tw - _pad
+    else:
+        tx = x + (w - tw) / 2.0
     ty = y + (h - th) / 2.0
     k = stroke_px(st, s)
     fill = st.get('fill') or (0, 0, 0)
     sf = st.get('stroke_fill')
+    if st.get('hollow') and st.get('bg') is not None and not st.get('art'):
+        bgc = tuple(int(v) for v in st['bg'])
+        draw.text(xy, ch, font=font, fill=bgc, stroke_width=max(2, k + 1), stroke_fill=fill)
+        return
     sh = st.get('shadow')
+    if not sh and st.get('shadow_rel'):
+        try:
+            _rx, _ry, _rc = st['shadow_rel']
+            sh = (int(round(float(_rx) * s)), int(round(float(_ry) * s)),
+                  tuple(int(v) for v in _rc))
+        except Exception:
+            sh = None
     if sh:
         dx, dy, col = sh
         draw.text((tx + dx, ty + dy), text, font=font, fill=col,
                   stroke_width=(k + 2 if st.get('art') else k), stroke_fill=col)
+    k2 = 0
+    sf2 = st.get('stroke2')
+    if sf2 is not None and st.get('stroke2_w'):
+        k2 = max(1, int(round(float(st['stroke2_w']) * s / 20.0)))
     if st.get('art'):
         draw.text((tx, ty), text, font=font, fill=fill, stroke_width=k + 2, stroke_fill=sf or fill)
+    if k2 and sf2 is not None:
+        # 外层第二种描边:先画粗的外描边,再画内描边与字
+        draw.text((tx, ty), text, font=font, fill=tuple(int(v) for v in sf2),
+                  stroke_width=k + k2, stroke_fill=tuple(int(v) for v in sf2))
     draw.text((tx, ty), text, font=font, fill=fill, stroke_width=k, stroke_fill=sf)
     return True
 
@@ -344,10 +370,26 @@ def draw_styled(draw, xy, ch, font, st, s):
     fill = st.get('fill') or (0, 0, 0)
     sf = st.get('stroke_fill')
     sh = st.get('shadow')
+    if not sh:
+        sr = st.get('shadow_rel')
+        if sr:
+            try:
+                sh = (int(round(float(sr[0]) * s)), int(round(float(sr[1]) * s)), tuple(sr[2]))
+            except Exception:
+                sh = None
     if sh:
         dx, dy, col = sh
         draw.text((xy[0] + dx, xy[1] + dy), ch, font=font, fill=col,
                   stroke_width=(k + 2 if st.get('art') else k), stroke_fill=col)
+    k2 = 0
+    if st.get('stroke2'):
+        try:
+            k2 = int(round(float(st.get('stroke2_w') or 1.0) * s / 20.0))
+        except Exception:
+            k2 = 1
+        k2 = max(1, min(12, k2))
+    if k2:
+        draw.text(xy, ch, font=font, fill=st['stroke2'], stroke_width=k + k2, stroke_fill=st['stroke2'])
     if st.get('art'):
         draw.text(xy, ch, font=font, fill=fill, stroke_width=k + 2, stroke_fill=sf or fill)
         draw.text(xy, ch, font=font, fill=fill, stroke_width=max(1, k), stroke_fill=sf or fill)
@@ -384,3 +426,195 @@ def smart_clear_white(arr, box, thresh=205, max_ratio=0.42):
         return arr
     except Exception:
         return arr
+
+def sample_style(img, x, y, w, h, st, is_plain=True, size=None):
+    """样式跟随:从原图框内采样文字主色/描边色/描边粗细。
+    仅对拟声词(is_plain=True)使用;采样失败返回原样式。
+    符号(♡♪ 等)由调用方用符号字体绘制,颜色同样跟随本函数结果。
+    """
+    try:
+        import numpy as np
+    except Exception:
+        return st
+    if not is_plain:
+        return st
+    try:
+        W, H = img.size
+        x0 = max(0, int(x)); y0 = max(0, int(y))
+        x1 = min(W, int(x + w)); y1 = min(H, int(y + h))
+        if x1 - x0 < 6 or y1 - y0 < 6:
+            return st
+        arr = np.asarray(img.crop((x0, y0, x1, y1)).convert('RGB')).astype(np.int16)
+        hh, ww = arr.shape[:2]
+        k = max(1, int(round(min(hh, ww) * 0.10)))
+        edge = np.concatenate([
+            arr[:k].reshape(-1, 3), arr[-k:].reshape(-1, 3),
+            arr[:, :k].reshape(-1, 3), arr[:, -k:].reshape(-1, 3),
+        ]).astype(np.float32)
+        if edge.size == 0:
+            return st
+        bg = np.median(edge, axis=0)
+        flat = arr.reshape(-1, 3).astype(np.float32)
+        dist = np.abs(flat - bg).sum(axis=1)
+        sel = dist > 120
+        if sel.sum() < max(24, flat.shape[0] * 0.02):
+            return st
+        px = flat[sel]
+        fill = np.median(px, axis=0).astype(int).tolist()
+        # 字心主色:取距离变换峰值(笔画中心)的颜色,多层描边时不受描边色干扰
+        try:
+            import cv2 as _cv2
+            _m0 = sel.reshape(hh, ww).astype(np.uint8)
+            _dt = _cv2.distanceTransform(_m0, _cv2.DIST_L2, 5)
+            if _dt.max() >= 2.0:
+                _peaks = _dt >= max(2.0, 0.55 * float(_dt.max()))
+                if int(_peaks.sum()) >= 20:
+                    fill = np.median(flat.reshape(hh, ww, 3)[_peaks], axis=0).astype(int).tolist()
+        except Exception:
+            pass
+        lum = 0.299 * fill[0] + 0.587 * fill[1] + 0.114 * fill[2]
+        bg_lum = 0.299 * bg[0] + 0.587 * bg[1] + 0.114 * bg[2]
+        # 描边:字亮底暗用深描边,字暗底亮用白描边
+        stroke_fill = (0, 0, 0) if lum > bg_lum else (255, 255, 255)
+        # 描边粗细估计:统计「与描边色接近」的像素比例,再折算成 stroke(按字号 20 计)
+        flat_l = flat.mean(axis=1)
+        if stroke_fill == (0, 0, 0):
+            stroke_ratio = float((flat_l < 45).sum()) / max(1, flat.shape[0])
+        else:
+            stroke_ratio = float((flat_l > 218).sum()) / max(1, flat.shape[0])
+        if stroke_ratio > 0.30:
+            stroke = 4
+        elif stroke_ratio > 0.18:
+            stroke = 3
+        elif stroke_ratio > 0.08:
+            stroke = 2
+        else:
+            stroke = 1
+        out = dict(st)
+        out['fill'] = tuple(int(v) for v in fill)
+        out['stroke_fill'] = stroke_fill
+        out['stroke'] = stroke
+        out['bg'] = tuple(int(v) for v in bg)
+        # ---- 空心字 + 字距 采样 ----
+        try:
+            import cv2
+            mask = (dist > 120).reshape(hh, ww).astype(np.uint8)
+            if int(mask.sum()) >= 30:
+                n, lab, st2, _c = cv2.connectedComponentsWithStats(mask, 8)
+                # 空心判定:字形内部有「封闭的背景空洞」(不接触框边)
+                bgm = (1 - mask).astype(np.uint8)
+                n2, lab2, st3, _c2 = cv2.connectedComponentsWithStats(bgm, 8)
+                holes = 0
+                for i in range(1, n2):
+                    x2, y2 = st3[i, cv2.CC_STAT_LEFT], st3[i, cv2.CC_STAT_TOP]
+                    w2, h2 = st3[i, cv2.CC_STAT_WIDTH], st3[i, cv2.CC_STAT_HEIGHT]
+                    area2 = int(st3[i, cv2.CC_STAT_AREA])
+                    touch = (x2 <= 0 or y2 <= 0 or x2 + w2 >= ww or y2 + h2 >= hh)
+                    if (not touch) and area2 >= 30:
+                        holes += 1
+                _ys, _xs = np.nonzero(mask)
+                if len(_xs) > 0:
+                    _bw = float(_xs.max() - _xs.min() + 1); _bh = float(_ys.max() - _ys.min() + 1)
+                    _ink_ratio = float(mask.sum()) / max(1.0, _bw * _bh)
+                else:
+                    _ink_ratio = 1.0
+                out['hollow'] = bool(holes >= 2 and _ink_ratio < 0.32)
+                # 字距:同一条线上相邻字的中心间距 / 字宽
+                comps = []
+                for i in range(1, n):
+                    area2 = int(st2[i, cv2.CC_STAT_AREA])
+                    if area2 < 30:
+                        continue
+                    comps.append((st2[i, cv2.CC_STAT_LEFT] + st2[i, cv2.CC_STAT_WIDTH] / 2.0,
+                                  st2[i, cv2.CC_STAT_TOP] + st2[i, cv2.CC_STAT_HEIGHT] / 2.0,
+                                  float(st2[i, cv2.CC_STAT_WIDTH]), float(st2[i, cv2.CC_STAT_HEIGHT])))
+                if len(comps) >= 2:
+                    axis = 0 if ww >= hh else 1
+                    comps.sort(key=lambda c: c[axis])
+                    exts = [c[2] if axis == 0 else c[3] for c in comps]
+                    ds = [abs(comps[i + 1][axis] - comps[i][axis]) for i in range(len(comps) - 1)]
+                    ds = [d for d in ds if d >= 6]
+                    ext = sum(exts) / len(exts)
+                    if ds and ext >= 6:
+                        ds.sort()
+                        pitch = ds[len(ds) // 2]
+                        _raw = pitch / ext
+                        out['spacing'] = float(min(1.60, max(1.0, round(_raw - 0.25, 2))))
+                # ---- 多层描边(外描边):墨迹最外层 3px「皮」的中位色≠内描边/填充色时,记作第二层描边 ----
+                try:
+                    _img3 = flat.reshape(hh, ww, 3).astype(np.int16)
+                    _ink2 = (np.abs(_img3 - np.array(bg, dtype=np.int16)).sum(axis=2) > 70).astype(np.uint8)
+                    _ys_, _xs_ = np.nonzero(_ink2)
+                    if len(_xs_) >= 40:
+                        _bh_ = float(_ys_.max() - _ys_.min() + 1)
+                        _skin = cv2.subtract(_ink2, cv2.erode(_ink2, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))))
+                        _sy, _sx = np.nonzero(_skin)
+                        if len(_sx) >= 80:
+                            _sc = _img3[_sy, _sx]
+                            _q = (_sc // 24).astype(np.int32)
+                            _key = _q[:, 0] * 121 + _q[:, 1] * 11 + _q[:, 2]
+                            _u, _cnt = np.unique(_key, return_counts=True)
+                            _dom = _u[int(np.argmax(_cnt))]
+                            _sel = _sc[_key == _dom]
+                            _med = np.median(_sel, axis=0).astype(int).tolist()
+                            _d_fill = np.abs(np.array(_med) - np.array(fill)).sum()
+                            _d_stroke = np.abs(np.array(_med) - np.array(stroke_fill)).sum()
+                            _d_bg = np.abs(np.array(_med) - np.array(bg)).sum()
+                            _spread = float(np.median(np.abs(_sel - np.array(_med)).sum(axis=1)))
+                            _share = float(len(_sel)) / max(1, len(_sc))
+                            _chroma = int(max(_med) - min(_med))
+                            if _d_fill > 95 and _d_stroke > 95 and _d_bg > 120 and _chroma >= 25:
+                                if _share >= 0.22:
+                                    out['stroke2'] = tuple(int(v) for v in _med)
+                                    out['stroke2_w'] = float(max(0.6, min(1.0, round(0.6 + (1.0 - _share) * 0.6, 2))))
+                except Exception:
+                    pass
+                # ---- 阴影方向采样:墨迹里的「第三色簇」(≠填充/描边)若整块偏移,记为投影方向 ----
+                try:
+                    _ys2, _xs2 = np.nonzero(mask)
+                    if len(_xs2) > 200:
+                        _cx2, _cy2 = float(_xs2.mean()), float(_ys2.mean())
+                        _bh2 = float(_ys2.max() - _ys2.min() + 1)
+                        _img2 = flat.reshape(hh, ww, 3).astype(np.int16)
+                        _ps = _img2[_ys2, _xs2]
+                        _qq = (_ps // 28).astype(np.int32)
+                        _kk = _qq[:, 0] * 121 + _qq[:, 1] * 11 + _qq[:, 2]
+                        _uu, _cc = np.unique(_kk, return_counts=True)
+                        _order = np.argsort(-_cc)[:4]
+                        _clusters = []
+                        for _j in _order:
+                            _m3 = _kk == _uu[_j]
+                            if int(_m3.sum()) < max(40, int(len(_ps) * 0.06)):
+                                continue
+                            _sel3 = _ps[_m3]
+                            _col = np.median(_sel3, axis=0).astype(int).tolist()
+                            _cenx = float(_xs2[_m3].mean()); _ceny = float(_ys2[_m3].mean())
+                            _clusters.append((_col, _cenx, _ceny, float(_m3.sum()) / len(_ps)))
+                        if len(_clusters) >= 2:
+                            _fillc = np.array(fill); _strokec = np.array(stroke_fill)
+                            _cand = [c for c in _clusters
+                                     if np.abs(np.array(c[0]) - _fillc).sum() > 70
+                                     and np.abs(np.array(c[0]) - _strokec).sum() > 70]
+                            if _cand:
+                                _cc2 = max(_cand, key=lambda c: c[3])
+                                _dx2 = _cc2[1] - _cx2; _dy2 = _cc2[2] - _cy2
+                                _mag2 = (abs(_dx2) ** 2 + abs(_dy2) ** 2) ** 0.5
+                                _fr = 6
+                                _edge = np.concatenate([flat.reshape(hh, ww, 3)[: _fr].reshape(-1, 3),
+                                                        flat.reshape(hh, ww, 3)[- _fr:].reshape(-1, 3),
+                                                        flat.reshape(hh, ww, 3)[:, : _fr].reshape(-1, 3),
+                                                        flat.reshape(hh, ww, 3)[:, - _fr:].reshape(-1, 3)])
+                                _eg = _edge.mean(axis=1)
+                                _unif = float(_eg.std())
+                                if _mag2 >= max(2.0, _bh2 * 0.045) and _bh2 >= 20 and _unif <= 10.0:
+                                    _sx2 = max(-0.12, min(0.12, (_dx2 / _bh2) * 0.3))
+                                    _sy2 = max(-0.12, min(0.12, (_dy2 / _bh2) * 0.3))
+                                    out['shadow_rel'] = (round(_sx2, 3), round(_sy2, 3),
+                                                         tuple(int(v) for v in _cc2[0]))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return out
+    except Exception:
+        return st

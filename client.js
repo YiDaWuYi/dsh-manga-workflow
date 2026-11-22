@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-manga-workflow',
   factory(require) {
   // 版本号(发布时同步 package.json / 桌面端 mark_tool.py)
-  const APP_VERSION = 'V1.15.20';
+  const APP_VERSION = 'V1.16';
 
     const React = require('react');
     const h = React.createElement;
@@ -206,9 +206,9 @@ window.__ModuleLoader__.load({
     };
     const gpuOfBox = (b) => !!(b && (b.gpu !== undefined ? b.gpu : b.lama));
 
-    function Marker({ folder, page, data, mode, setMode, kind, cover, gpu, dirMode,
+    function Marker({ folder, page, data, mode, setMode, kind, cover, gpu, dirMode, align, alignTouched,
                        size, autoSize, bodyStyle, sfxStyle, titleStyle, fontByKind,
-                       onBoxesChange, onTextEdit, onRefresh, reloadTick }) {
+                       onBoxesChange, onTextEdit, onRefresh, reloadTick, onSelect }) {
       const [boxes, setBoxes] = React.useState([]);
       const [sel, setSel] = React.useState(null);
       const [downAt, setDownAt] = React.useState(null);
@@ -221,13 +221,53 @@ window.__ModuleLoader__.load({
       const [edit, setEdit] = React.useState(null);       // 双击编辑
       const [imgError, setImgError] = React.useState('');
       const [undo, setUndo] = React.useState([]);
+      const [showTrans, setShowTrans] = React.useState(false);  // 画布上直接显示译文(默认关,需要时勾选)
+      const [showOrig, setShowOrig] = React.useState(false);    // 画布上直接显示 OCR 原文
       const wrapRef = React.useRef(null);
 
+      // 页数据变化(换页 / 自动标框后重读 / 刷新本页)时同步到画布;用「页 + 框几何」做指纹,避免无意义重置
+      const dataKeyRef = React.useRef('');
       React.useEffect(() => {
-        setBoxes(Array.isArray(data && data.boxes) ? data.boxes.map((b) => ({ ...b })) : []);
+        const _d = data || {};
+        const _bs = Array.isArray(_d.boxes) ? _d.boxes : [];
+        const _k = String(_d.page || '') + '|'
+          + _bs.map((b) => [b.x | 0, b.y | 0, b.w | 0, b.h | 0, b.kind || '', b.auto ? 1 : 0].join(',')).join(';');
+        if (_k === dataKeyRef.current) return;
+        dataKeyRef.current = _k;
+        setBoxes(_bs.map((b) => ({ ...b })));
         setUndo([]);
         setEdit(null);
-      }, [data && data.page]);
+      }, [data, reloadTick]);
+
+      // 选中框后,工具栏参数变化 → 实时写回该框(修复「点框改参数不生效」)
+      const toolSigRef = React.useRef('');
+      React.useEffect(() => {
+        if (sel === null || sel === undefined) { toolSigRef.current = ''; return; }
+        const sig = JSON.stringify([kind, cover, gpu, dirMode, size, autoSize, align, alignTouched,
+                                    bodyStyle, sfxStyle, titleStyle, fontByKind]);
+        if (toolSigRef.current === '') { toolSigRef.current = sig; return; }   // 刚选中:只记录,不改框
+        if (toolSigRef.current === sig) return;
+        toolSigRef.current = sig;
+        setBoxes((prev) => prev.map((b, i) => {
+          if (i !== sel) return b;
+          const nb = { ...b };
+          const k = kind;
+          nb.kind = k;
+          nb.cover = (k === 'plain' && cover === 'cover') ? 'overlay' : cover;
+          nb.sfx = (k === 'plain');
+          nb.erase = (nb.cover === 'erase');
+          nb.vertical = dirMode === 'auto' ? 'auto' : (dirMode === 'v');
+          const sz = parseInt(size, 10);
+          if (!Number.isNaN(sz) && sz > 0) nb.size = sz;
+          if (autoSize) { delete nb.size_fixed; } else { nb.size_fixed = true; }
+          if (alignTouched) { nb.align = align; delete nb.align_auto; }
+          if (nb.cover === 'erase') nb.gpu = !!gpu; else delete nb.gpu;
+          nb.style = k === 'title' ? titleStyle : (k === 'plain' ? sfxStyle : bodyStyle);
+          if (fontByKind[k]) nb.font = fontByKind[k]; else delete nb.font;
+          return nb;
+        }));
+      }, [sel, kind, cover, gpu, dirMode, size, autoSize, align, alignTouched,
+          bodyStyle, sfxStyle, titleStyle, fontByKind]);
 
       React.useEffect(() => {
         if (!folder || !page) { setImgUrl(''); return; }
@@ -295,6 +335,7 @@ window.__ModuleLoader__.load({
             ...cur,
             kind: k, cover: cov,
             vertical: dir === 'auto' ? 'auto' : (dir === 'v'),
+            align: alignTouched ? (align || 'auto') : (cur.align || 'auto'),
             size: Number(size) || 20,
             size_fixed: !autoSize,
             erase: cov === 'erase', sfx: k === 'plain',
@@ -309,7 +350,7 @@ window.__ModuleLoader__.load({
           copy[i] = next;
           return copy;
         });
-      }, [kind, cover, gpu, dirMode, size, autoSize, bodyStyle, sfxStyle, titleStyle, fontByKind]);
+      }, [kind, cover, gpu, dirMode, align, alignTouched, size, autoSize, bodyStyle, sfxStyle, titleStyle, fontByKind]);
 
       const pos = (e) => {
         const el = wrapRef.current;
@@ -354,6 +395,7 @@ window.__ModuleLoader__.load({
         if (d0 && moved <= 4 && !(paint && paint.length > 1)) {
           const i = hit(d0, hitPad());
           setSel(i >= 0 ? i : null);
+          if (onSelect) { try { onSelect(i >= 0 ? boxes[i] : null); } catch (e) { /* ignore */ } }
           setPaint(null);
           setDrag(null);
           setDownAt(null);
@@ -434,9 +476,16 @@ window.__ModuleLoader__.load({
         ? paint.slice(1).map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ')
         : '';
 
+      const _srcBoxes = boxes.length ? boxes : (Array.isArray(data && data.boxes) ? data.boxes : []);
       return h('div', null,
         h('div', { style: S.row },
-          h('span', { style: S.muted }, `共 ${boxes.length} 框`),
+          h('span', { style: S.muted }, `共 ${_srcBoxes.length} 框`),
+          h('label', { style: { ...S.muted, fontSize: '11px', marginLeft: '6px' }, title: '在画布上直接显示每个框的译文,用来确认翻译是否成功' },
+            h('input', { type: 'checkbox', checked: showTrans, onChange: (e) => setShowTrans(!!e.target.checked) }),
+            '显示译文'),
+          h('label', { style: { ...S.muted, fontSize: '11px', marginLeft: '6px' }, title: '在画布上直接显示每个框的 OCR 原文,用来核对识别结果' },
+            h('input', { type: 'checkbox', checked: showOrig, onChange: (e) => setShowOrig(!!e.target.checked) }),
+            '显示原文'),
           h('span', { style: { flex: 1 } }),
           h('button', {
             type: 'button', style: S.btn,
@@ -461,7 +510,7 @@ window.__ModuleLoader__.load({
                 })
               : h('div', { style: { ...S.muted, padding: '40px', textAlign: 'center' } }, '图片加载中…'),
             imgError ? h('div', { style: { position: 'absolute', left: 0, right: 0, top: '40%', textAlign: 'center', color: '#ff8080', fontSize: '12px' } }, imgError) : null,
-            boxes.map((b, i) => {
+            _srcBoxes.map((b, i) => {
               const k = kindOfBox(b);
               const cm = coverOfBox(b);
               const col = k === 'title' ? '#4da6ff' : (k === 'plain' ? '#ff4d4d' : '#00d000');
@@ -494,6 +543,26 @@ window.__ModuleLoader__.load({
                     whiteSpace: 'nowrap',
                   },
                 }, proc),
+                (showOrig && data && Array.isArray(data.texts) && String(data.texts[i] || '').trim())
+                  ? h('span', {
+                      style: {
+                        position: 'absolute', left: 0, top: 0, maxWidth: '100%',
+                        fontSize: '11px', lineHeight: '1.25', padding: '1px 3px',
+                        color: '#9fe6ff', background: 'rgba(0,0,0,0.62)', borderRadius: '3px',
+                        whiteSpace: 'normal', wordBreak: 'break-all', pointerEvents: 'none',
+                      },
+                    }, String(data.texts[i]))
+                  : null,
+                (showTrans && data && Array.isArray(data.trans) && String(data.trans[i] || '').trim())
+                  ? h('span', {
+                      style: {
+                        position: 'absolute', left: 0, bottom: 0, maxWidth: '100%',
+                        fontSize: '11px', lineHeight: '1.25', padding: '1px 3px',
+                        color: '#fff', background: 'rgba(0,0,0,0.62)', borderRadius: '3px',
+                        whiteSpace: 'normal', wordBreak: 'break-all', pointerEvents: 'none',
+                      },
+                    }, String(data.trans[i]))
+                  : null,
               );
             }),
             bx ? h('div', {
@@ -531,7 +600,7 @@ window.__ModuleLoader__.load({
       ['标框', '框选 / 自由框选', '框选 / 自由框选'],
       ['撤销', '多步(最多 40 步,Ctrl+Z)', '完整栈(Ctrl+Z)'],
       ['双击改字', '弹窗改原文/译文', '弹窗改原文/译文'],
-      ['自动标框', '❌ 不支持', '✅ 支持(自动检测气泡)'],
+      ['自动标框', '✅ 支持(工具栏「自动标框」,auto 框需人工确认)', '✅ 支持(自动检测气泡)'],
       ['一键识别', '❌ 不支持', '✅ 支持(标框+OCR)'],
       ['同步(配对)', '❌ 不支持', '✅ 只对齐原文↔译文配对'],
       ['引擎帮助/修复', '❌ 不支持', '✅ 检测 + 复制修复关键词'],
@@ -551,13 +620,17 @@ window.__ModuleLoader__.load({
       ['视觉引擎(设置)', '✅ 两端共用同一份配置', '✅ 同一份配置'],
       ['侧边栏/提示开关', '✅ 设置里可开关(共享)', '✅ 改同一份共享配置'],
       ['互相启动', '✅ 一键「启动桌面版」', '—'],
-      ['确认嵌字', '✅ 体检 → 校对 → 页面内确认 → 嵌字 → 表单+预览', '✅ 按钮交给网页端执行'],
-      ['DSH 接管模式', '✅ 拟声词识别填词 / DSH汉化模式 / 单页识图翻译', '❌ 仅网页端'],
-      ['预计消耗', '✅ 点击时显示 ¥ 区间与框数', '❌ 仅网页端'],
+      ['确认嵌字', '✅ 体检 → 校对 → 页面内确认 → 嵌字 → 表单+预览', '✅ 两种:本机嵌字(体检→校对→嵌字,成品自动进 已完成/);网页嵌字(交网页执行)'],
+      ['DSH 接管模式', '✅ 拟声词识别填词 / DSH汉化模式(整本) / 单页识图翻译', '✅ 单页识图翻译 / 拟声识别填词(本页);整本「DSH汉化模式」仅网页端'],
+      ['预计消耗', '✅ 点击前显示 ¥ 区间与框数', '⚠ 无预估:点「单页识图/拟声填词」会直接调用付费视觉引擎'],
       ['页码直达', '✅ [页码]跳/回车', '✅ ◀ [页码] 跳 ▶'],
       ['版本检测', '✅ 启动页每天自动 + 检查更新', '✅ 启动页每天自动 + 检查更新'],
       ['长任务', '异步任务 + 日志轮询', '后台线程 + 状态栏流式进度'],
-      ['中断任务', '❌ 只能等它跑完', '✅「取消当前任务」杀进程树'],
+      ['中断任务', '✅「取消当前任务」杀进程树(OCR/翻译/校对/嵌字/DSH)', '✅「取消当前任务」杀进程树'],
+      ['项目库(数据/成品)', '✅ 数据在 <工作区>\\projects\\<书名>;成品自动进 <工作区>\\已完成\\<书名>', '✅ 同(设置里显示数据/成品路径)'],
+      ['缓存/模型管理', '✅ 设置页:清理缓存 / 删除模型(按项勾选)', '✅ 设置弹窗:清理缓存(删除模型仅网页端)'],
+      ['首次使用帮助门禁', '✅ 第一次必须把帮助滚到最底才能用', '✅ 同(ack 写工作区或 ~/.manga-workflow)'],
+      ['拟声词默认处理', '✅ 默认「译文直盖」+样式跟随,不抹除原字', '✅ 同'],
     ];
 
     // 逐行渲染帮助文本(不依赖 CSS white-space,换行稳定)
@@ -669,8 +742,8 @@ window.__ModuleLoader__.load({
         'A: 设置 → OCR 兜底,临时切「空框 + 极短」并把阈值设为 2,再跑一次 OCR(详见「六、OCR 兜底」);',
         '   也可以双击框手动改原文,桌面版改起来更顺手。',
         '',
-        'Q: 为什么没有自动标框?',
-        'A: 网页版暂不支持,请点「启动桌面版」用桌面工具自动标框。',
+        'Q: 自动标框的框为什么默认不参与嵌字?',
+        'A: 自动框标了 auto 标记,确认无误后勾选「auto 参与」(或逐个改类型/删错框)才会嵌字。',
         '',
         'Q: 输入框下方那条「已就绪」提示能关掉吗?',
         'A: 能。设置 → 界面选项 → 启动提示弹窗。',
@@ -686,6 +759,37 @@ window.__ModuleLoader__.load({
         '',
         'Q: 换成免费模型后 AI 还是看不到图?',
         'A: 先点「测试识图」看是否通过;通过后重开一次对话,识图才会用上新配置。',
+        '',
+        'Q: 失败报告里的「未翻译 / 噪音 / 装饰字 / 疑似误判」是什么意思?',
+        'A: 未翻译 = 跑一次「整本 翻译」即可;噪音 = 页码 / 水印 / 界面文字,建议排除不用管;',
+        '   装饰字 = 艺术字 / 目录页,OCR 不可靠,建议手填原文;疑似误判 = 可忽略,不用逐条改。',
+        '',
+        'Q: 噪音框(页码/水印/界面文字)不删,会影响嵌字吗?',
+        'A: 平时不影响(自动框默认 auto、不参与嵌字);但如果点「全书auto参与」,旧版会把噪音也设为参与,',
+        '   中文就会盖到画面上。15.57 起已在「翻译 / 嵌字 / 三个参与按钮」三处自动跳过噪音框;',
+        '   只有想让标框画面干净时才需要右键删掉这些框。',
+        '',
+        'Q: 「本页auto→参与」「仅补有译文的」「全书auto参与」有什么区别?',
+        'A: 三者都是把 auto 框变成「参与嵌字」,防止未确认的自动框被直接嵌:',
+        '   · 本页auto→参与:本页所有框都参与(含没译文的,译文空就不嵌);',
+        '   · 仅补有译文的(推荐):只让「已有译文」的框参与,没译文的保持不动,避免空框误嵌;',
+        '   · 全书auto参与:遍历全书,把所有有译文的 auto 框设为参与(最慢,建议先保存/校对)。',
+        '   三者都会自动跳过页码/UI/小碎框等噪音。',
+        '',
+        'Q: 译文乱了/错位,想重新翻译一遍怎么办?',
+        'A: 勾选工具栏「强制重译」,再点「翻译」即可覆盖已有译文重翻(按「范围」作用于此页或整本)。',
+        '   若仍乱,先删掉该页的框重新自动标框,再 OCR + 强制重译。',
+        '',
+        'Q: 怎么确认翻译有没有成功?',
+        'A: 画布上方有「显示译文」勾选(默认关),勾上后每个框底部直接显示中文译文;',
+        '   旁边「显示原文」勾选可同时显示 OCR 原文(核对识别结果)。右上角「译 N」是全书已翻译框数。',
+        '',
+        'Q: 任务跑完了,但画面没有变化?',
+        'A: 点画布上方「⟳ 刷新本页」即可重新加载本页的框/译文/图片(不重载整个面板);',
+        '   嵌字后想看新图也用它。任务结束时状态条会提醒这一点。',
+        '',
+        'Q: 上面办法都解决不了,或者程序反复报错怎么办?',
+        'A: 到 B 站视频评论区反馈 BUG(附现象与截图):https://www.bilibili.com/video/BV15Zs86GEz7',
       ];
 
       return h('div', { style: S.root },
@@ -770,6 +874,7 @@ window.__ModuleLoader__.load({
               '【记忆】每种类型各自记住上次的原文处理/GPU,切换类型自动恢复(仅本次页面会话)',
               '【方向】自动检测 / 竖排 / 横排;【字号】手动 + 自动字号(拟声放大、正文缩到框内)',
               '【拟声词】固定「译文直盖」,不记忆、不可选色块覆盖;确实要擦原字请改成「抹除」',
+              '【拟声样式跟随】自动采样原图字色/描边色/描边粗细,♡♪♥ 等符号保留并跟随样式;默认不抹除(避免浅块),要擦在 config.json 设 sfx_erase: true',
             ],
             style: S.muted,
           }),
@@ -872,6 +977,7 @@ window.__ModuleLoader__.load({
             lines: [
               '【拟声词】固定「译文直盖」:色块覆盖已移除;需要擦原字就把原文处理改成「抹除」。',
               '【确认嵌字】体检 → 校对 → 页面内确认 → 嵌字 → 表单+预览;全程显示分阶段进度。',
+              '  · 旁边「范围」选「此页」只处理当前页(推荐先单页试),选「整本」处理全书已标框的页;体检/校对/嵌字都按该范围执行。',
               '【auto 参与】本页auto→参与 / 仅补有译文的(推荐) / 全书auto参与 / 体检时auto参与。',
               '【单页识图翻译】当前页:视觉引擎读原文 → DSH 翻译(付费,按页计费)。',
               '【拟声词识别填词】本页拟声词:视觉识别 → DSH 翻译 → 自动设为参与嵌字。',
@@ -1500,6 +1606,28 @@ h('div', { style: S.row },
             }, uiCfg ? (uiCfg.rememberPathWeb ? '已开启(点击关闭)' : '已关闭(点击开启)') : '读取中…'),
             h('span', { style: { ...S.muted, fontSize: '11px' } }, '仅网页端,与桌面端各自独立'),
           ),
+          h('div', { style: S.row },
+            h('span', { style: label }, '气泡内正文擦除'),
+            h('button', {
+              type: 'button',
+              style: uiCfg && uiCfg.bubbleErase !== false ? S.btnOn : S.btn,
+              disabled: !uiCfg,
+              onClick: () => toggleUi('bubbleErase'),
+              title: '白气泡内正文用气泡底色平涂原日文(推荐开启)',
+            }, uiCfg ? (uiCfg.bubbleErase !== false ? '已开启(点击关闭)' : '已关闭(点击开启)') : '读取中…'),
+            h('span', { style: { ...S.muted, fontSize: '11px' } }, '默认开;关掉则正文只剩直盖/普通inpaint'),
+          ),
+          h('div', { style: S.row },
+            h('span', { style: label }, '拟声词也擦除'),
+            h('button', {
+              type: 'button',
+              style: uiCfg && uiCfg.sfxErase === true ? S.btnOn : S.btn,
+              disabled: !uiCfg,
+              onClick: () => toggleUi('sfxErase'),
+              title: '拟声词先擦原字再写中文;复杂背景(网点/线条)会留下涂抹痕',
+            }, uiCfg ? (uiCfg.sfxErase === true ? '已开启(点击关闭)' : '已关闭(点击开启)') : '读取中…'),
+            h('span', { style: { ...S.muted, fontSize: '11px' } }, '默认关;复杂背景建议保持关闭'),
+          ),
           uiCfg && uiCfg.file
             ? h('div', { style: { ...S.muted, marginTop: '6px', fontSize: '11px' } }, `共享配置:${uiCfg.file}`)
             : null,
@@ -1539,7 +1667,7 @@ h('div', { style: S.row },
           h('div', { style: { ...S.muted, fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: wsDir },
             (wsExists ? '● 已就绪 · ' : '○ 未就绪 · ') + (wsDir || '(未设置)')),
           wsGuide ? h('div', { style: { ...S.muted, fontSize: '11px', marginTop: '4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: wsGuide },
-            '📄 已生成「DSH-接管说明.md」(新建对话先读它):' + wsGuide) : null,
+            '📄 已生成「DSH-接管说明.md」(新对话第一句让 DSH 先读它; 含「运行环境自检」: python manga_tool/selfcheck.py):' + wsGuide) : null,
         ),
         h(CachePanel, null),
         h('div', { style: { ...S.box, marginTop: '10px' } },
@@ -1907,6 +2035,7 @@ h('div', { style: S.row },
       const [confirmDlg, setConfirmDlg] = React.useState(null);
       const [previewPg, setPreviewPg] = React.useState('');
       const [pfAuto, setPfAuto] = React.useState(false);   // 体检时让有译文的 auto 框参与
+      const [embedScope, setEmbedScope] = React.useState('page');  // 确认嵌字范围:page=此页 / book=整本
       const [activeJobId, setActiveJobId] = React.useState('');   // 当前任务(用于取消)
       const [estInfo, setEstInfo] = React.useState(null);          // DSH 接管预估(常驻显示)
       const [log, setLog] = React.useState('');
@@ -1949,6 +2078,59 @@ h('div', { style: S.row },
         return () => { alive = false; };
       }, [folder]);
       const [msg, setMsg] = React.useState('');
+      // 样式自动识别(跟随原文样式):项目级开关,读/写项目 config.json 的 follow_style
+      const [followStyle, setFollowStyle] = React.useState(true);
+      const [forceTrans, setForceTrans] = React.useState(false);   // 强制重译(覆盖现有译文)
+      React.useEffect(() => {
+        if (!folder) return undefined;
+        let alive = true;
+        (async () => {
+          try {
+            const r = await api('/project-config?folder=' + encodeURIComponent(folder));
+            if (alive && r && typeof r.follow_style === 'boolean') setFollowStyle(r.follow_style);
+          } catch (e) { /* 旧后台无此接口时保持默认开 */ }
+        })();
+        return () => { alive = false; };
+      }, [folder]);
+      const toggleFollowStyle = async (v) => {
+        setFollowStyle(v);
+        try {
+          await api('/project-config?folder=' + encodeURIComponent(folder), { follow_style: v });
+          setMsg(v ? '已开启:嵌字时跟随原文样式(字色/描边/空心/字距)' : '已关闭:使用样式库里选的样式');
+        } catch (e) {
+          setMsg('保存失败:' + String((e && e.message) || e));
+        }
+      };
+      const showFailures = async () => {
+        if (!folder) { setMsg('先选一本书'); return; }
+        const _fsp = (embedScope === 'page') ? (page || '') : '';
+        setMsg('⏳ 正在汇总失败报告…(' + (_fsp ? '此页 ' + _fsp : '整本') + ')');
+        try {
+          const r = await api('/failure-report?folder=' + encodeURIComponent(folder)
+            + (_fsp ? ('&page=' + encodeURIComponent(_fsp)) : ''));
+          if (!r || !r.ok) { setMsg('⚠ ' + ((r && r.error) || '还没有失败报告')); return; }
+          // (服务端 ok:false 会由 api() 抛错,这里只处理正常返回)
+          const rep = r.report || {};
+          const c = rep.failure_counts || {};
+          const n = rep.failures_total || 0;
+          const _scope = _fsp ? ('此页(' + _fsp + ')') : '整本';
+          const cc = rep.class_counts || {};
+          const _cls = (cc.untranslated || cc.noise || cc.decorative || cc.suspect)
+            ? (';细分:未翻译 ' + (cc.untranslated || 0) + ' / 噪音(建议排除) ' + (cc.noise || 0)
+               + ' / 装饰字 ' + (cc.decorative || 0) + ' / 疑似误判 ' + (cc.suspect || 0))
+            : '';
+          setMsg(n
+            ? ('⚠ ' + _scope + ' 失败 ' + n + ' 框(OCR空 ' + (c.ocr_empty || 0) + ' / 兜底失败 ' + (c.fallback_failed || 0)
+               + ' / 疑似错 ' + (c.ocr_suspect || 0) + ' / 缺译文 ' + (c.trans_missing || 0) + ')' + _cls
+               + (_fsp ? ' → 要让 DSH 读整本报告请把范围切「整本」' : ' → 已写 ocr_failure_report.json,可让 DSH 读'))
+            : ('✅ ' + _scope + ' 没有失败框'));
+        } catch (e) {
+          const _es = String((e && e.message) || e);
+          setMsg(_es.indexOf('还没有') >= 0 || _es.indexOf('先跑一次') >= 0
+            ? ('ℹ ' + _es)
+            : ('⚠ 读取失败报告出错:' + _es));
+        }
+      };
       const textEdits = React.useRef(new Map());
       // 自动保存
       const dirtyRef = React.useRef(false);        // 有未保存修改
@@ -1988,6 +2170,8 @@ h('div', { style: S.row },
         kindMemRef.current[kind] = { ...(kindMemRef.current[kind] || {}), cover, gpu: v };
       };
       const [dirMode, setDirMode] = React.useState('auto');
+      const [alignMode, setAlignMode] = React.useState('auto');   // 标题对齐:auto/left/center/right
+      const [alignTouched, setAlignTouched] = React.useState(false);
       const [size, setSize] = React.useState('20');
       const [autoSize, setAutoSize] = React.useState(true);
       const [bodyStyle, setBodyStyle] = React.useState('body_classic');
@@ -2058,14 +2242,16 @@ h('div', { style: S.row },
 
       // 「⟳ 刷新本页」:只重读当前页的框/译文/图片,不重载整个面板
       async function reloadPage() {
-        if (!folder || !page) return;
+        if (!folder) { setMsg('刷新本页:还没选书'); return; }
+        if (!page) { setMsg('刷新本页:还没选中页(先在下面点一张页或翻页)'); return; }
         try {
           const pg = await api(`/regions?folder=${encodeURIComponent(folder)}&page=${encodeURIComponent(page)}`);
           setPageData({ ...pg, page });
           textEdits.current.clear();
           dirtyRef.current = false;
           setReloadTick((n) => n + 1);   // 让图片也重新加载
-          setMsg('已刷新本页');
+          setMsg('已刷新本页:' + page + ' · 框 ' + ((pg.boxes || []).length) + ' 个');
+          setLog('[刷新本页] ' + page + ' 框=' + ((pg.boxes || []).length) + ' 译=' + ((pg.trans || []).length));
         } catch (e) {
           setMsg('刷新失败:' + String(e.message || e));
         }
@@ -2185,6 +2371,17 @@ h('div', { style: S.row },
         }
       }
 
+      // 噪音框判定(与 python boxtools.is_noise_box 一致):页码/水印/UI/小碎框 → 不翻译、不嵌字
+      const isNoiseBox = (b, txt) => {
+        const t = String(txt || '').trim();
+        if (!t) return false;
+        const w = Number(b && b.w) || 0, h = Number(b && b.h) || 0;
+        if (w < 40 || h < 25) return true;
+        if (/^[0-9０-９\s\W_]+$/.test(t)) return true;
+        if (/^[A-Za-zＡ-Ｚａ-ｚ0-9０-９\s\W_]+$/.test(t)) return true;
+        return false;
+      };
+
       async function autoParticipateAll() {
         if (!folder || loading) return;
         setLoading(true);
@@ -2198,9 +2395,12 @@ h('div', { style: S.row },
               + '&page=' + encodeURIComponent(p.page));
             const boxes = r.boxes || [];
             const tr = r.trans || [];
-            const nb = boxes.map((b, i) => (
-              b.auto && tr[i] && String(tr[i]).trim() ? { ...b, auto: false } : b
-            ));
+            const ot = r.texts || [];
+            const nb = boxes.map((b, i) => {
+              if (!(b.auto && tr[i] && String(tr[i]).trim())) return b;
+              if (isNoiseBox(b, ot[i])) return b;      // 页码/UI 噪音不参与
+              return { ...b, auto: false };
+            });
             const changed = nb.filter((b, i) => b.auto !== boxes[i].auto).length;
             if (changed) {
               await api('/save', { folder, page: p.page, boxes: nb, edits: [] });
@@ -2242,32 +2442,99 @@ h('div', { style: S.row },
         }
       }
 
-      async function runJob(step) {
-        const { jobId } = await api('/run', { folder, step });
+      async function runJob(step, opts) {
+        const _body = { folder, step };
+        if (opts && opts.page) _body.page = opts.page;
+        if (step === 'translate' && forceTrans) _body.overwrite = true;
+        const _names = { detect: '自动标框', ocr: 'OCR', translate: '翻译', proofread: '校对', embed: '嵌字', bench: '检测' };
+        const _label = _names[step] || step;
+        const { jobId } = await api('/run', _body);
         setActiveJobId(jobId);
         let lastLog = '';
+        const _t0 = Date.now();
+        setMsg('⏳ ' + _label + ' 已启动…' + (_body.page ? '(此页)' : '(整本)'));
         for (;;) {
+          if (Date.now() - _t0 > 30 * 60 * 1000) {
+            setMsg('⚠ ' + _label + ' 超时(>30 分钟),已停止等待;请点「⟳ 刷新本页」查看结果,或重试');
+            setActiveJobId(null);
+            return { code: -1, status: 'timeout', log: lastLog };
+          }
           await new Promise((r) => setTimeout(r, 1200));
           const j = await api(`/job?id=${encodeURIComponent(jobId)}`);
-          if (j.log && j.log !== lastLog) { lastLog = j.log; setLog(j.log); }
+          if (j.log && j.log !== lastLog) {
+            lastLog = j.log;
+            setLog(j.log);
+            const _lines = String(j.log).split('\n').map((x) => x.trim()).filter(Boolean);
+            const _last = _lines.length ? _lines[_lines.length - 1] : '';
+            if (_last) setMsg('⏳ ' + _label + ' 运行中 · ' + _last.slice(-60));
+          }
           if (j.status !== 'running') {
             setLog(`[${step}] exit=${j.code}\n${j.log || ''}`);
+            const _needReload = ['detect', 'ocr', 'translate', 'proofread', 'embed'].indexOf(step) >= 0;
+            setMsg((j.code === 0 ? '✅ ' : '⚠ ') + _label + (j.status === 'cancelled' ? ' 已取消' : ' 结束') + '(exit=' + j.code + ')'
+              + (_needReload ? ' · 若画面没有变化,请点「⟳ 刷新本页」' : ''));
+            if (_needReload) {
+              setLog(String(j.log || '') + '\n[提示] 进程已结束。若画布/图片没有变化,点上方「⟳ 刷新本页」重新加载本页(框、译文、图片)。');
+            }
             return j;
           }
         }
       }
 
+      // 自愈:若 loading 卡住但没有活动任务,自动复位(否则按钮永久变灰 → 表现为“点了没反应”)
+      React.useEffect(() => {
+        if (!loading || activeJobId) return;
+        const t = setTimeout(() => {
+          try { setLoading(false); setMsg('⚠ 刚才的任务可能异常结束,已自动复位;若画面没变化请点「⟳ 刷新本页」'); } catch (e) { /* ignore */ }
+        }, 6000);
+        return () => clearTimeout(t);
+      }, [loading, activeJobId]);
+
       async function run(step) {
-        if (!folder) return;
+        if (!folder) { setMsg('⚠ 请先选择/打开一本漫画,再点「' + (step || '') + '」'); return; }
+        if (loading) { setMsg('⚠ 已有任务在运行,请等它结束或点「取消当前任务」'); return; }
+        if (embedScope === 'page' && page && pageData && !(pageData.boxes || []).length
+            && ['ocr', 'translate', 'proofread', 'embed'].indexOf(step) >= 0) {
+          setMsg('⚠ 本页还没有标框(' + page + '),先点「自动标框」再执行 ' + step);
+          return;
+        }
+        const _sp = (embedScope === 'page') ? (page || '') : '';
+        // 已经全部有译文时直接提示,不发任务(否则点了像“没反应”)
+        if (step === 'translate' && !forceTrans) {
+          try {
+            if (_sp && pageData) {
+              const _T = pageData.trans || [];
+              const _miss = (pageData.boxes || []).filter((b, i) => !String(_T[i] || '').trim()).length;
+              if (!_miss) { setMsg('✅ 本页所有框都已有译文,无需再翻译(想重译请先清空译文或勾选覆盖)'); return; }
+            } else if (info) {
+              const _b = Number(info.boxes) || 0, _t = Number(info.translated) || 0;
+              if (_b && _t >= _b) { setMsg('✅ 全书所有框都已有译文,无需再翻译'); return; }
+            }
+          } catch (e) { /* ignore */ }
+        }
         setLoading(true);
-        setLog(`正在执行 ${step}…`);
+        setLog(`正在执行 ${step}…` + (_sp ? `(此页 ${_sp})` : '(整本)'));
         try {
-          await runJob(step);
+          const j = await runJob(step, { page: _sp });
           await refresh();
-          if (page) await loadPage(page);
+          if (step === 'detect') {
+            const _m = String((j && j.log) || '').match(/\{[^{}]*"pages"[^{}]*\}/);
+            if (_m) { try { const _o = JSON.parse(_m[0]); setMsg((_o.boxes ? '✅ ' : '⚠ ') + '自动标框完成:' + _o.pages + ' 页 / ' + _o.boxes + ' 框' + (_o.dropped ? '(排除 ' + _o.dropped + ')' : '') + (_o.boxes ? '' : ' — 本页可能已无文字或全是纯画面;换一页再试')); } catch (e2) { /* ignore */ } }
+            setLog('[自动标框] 当前页=' + (page || '(空)') + ' · ' + String((j && j.log) || '').split('\n').filter(Boolean).slice(-1)[0]);
+            if (page) {
+              await loadPage(page);          // 始终留在当前页,不要跳走
+            } else {
+              const _st = await api('/status?folder=' + encodeURIComponent(folder));
+              const _first = ((_st && _st.pages) || []).find((x) => (x.boxes || 0) > 0);
+              if (_first) await loadPage(_first.page);
+            }
+          } else if (page) {
+            await loadPage(page);
+          }
         } catch (e) {
           setLog(String(e.message || e));
         } finally {
+          setActiveJobId(null);
           setLoading(false);
         }
       }
@@ -2449,15 +2716,16 @@ h('div', { style: S.row },
         if (!folder) { setMsg('确认嵌字:请先选择/打开一本漫画'); return; }
         if (loading) { setMsg('确认嵌字:有任务正在运行,请等它结束再点'); return; }
         setLoading(true);
+        const scopePage = (embedScope === 'page') ? (page || '') : '';
         try {
           if (dirtyRef.current) await savePage({ auto: true });
-          setMsg('确认嵌字:0% · 嵌字前体检');
+          setMsg('确认嵌字:0% · 嵌字前体检(' + (scopePage ? '此页' : '整本') + ')');
           setLog('确认嵌字:0% · 嵌字前体检(对齐/无效译文/艺术字)');
           let pf = {};
-          try { pf = await api('/preflight', { folder, page, autoParticipate: pfAuto }); } catch (e) { pf = {}; }
+          try { pf = await api('/preflight', { folder, page: scopePage || null, autoParticipate: pfAuto }); } catch (e) { pf = {}; }
           setMsg('确认嵌字:10% · 嵌字前校对');
           setLog('[进度] 10% · 嵌字前体检完成,开始校对');
-          const r = await runJob('proofread');
+          const r = await runJob('proofread', { page: scopePage });
           const log = (r && r.log) || '';
           const lines = log.split('\n').filter((l) => l.trim());
           const issues = lines.filter((l) => l.startsWith('[问题]')).length;
@@ -2466,7 +2734,7 @@ h('div', { style: S.row },
           setMsg(`嵌字前校对完成:问题 ${issues} 条 / 提示 ${warns} 条`);
           setConfirmDlg({
             title: '确认嵌字',
-            body: `嵌字前体检:对齐 ${pf.aligned || 0} 处 · 缺译文 ${pf.missing_total || 0} 框 · `
+            body: `范围:${scopePage ? ('此页 ' + scopePage) : '整本'}\n嵌字前体检:对齐 ${pf.aligned || 0} 处 · 缺译文 ${pf.missing_total || 0} 框 · `
               + `无效译文 ${pf.invalid_total || 0} 框 · 艺术字 ${pf.art_total || 0} 框(已自动排除)\n`
               + `嵌字前校对:问题 ${issues} 条 / 提示 ${warns} 条`
               + (summaryLine ? '\n' + summaryLine : '')
@@ -2484,6 +2752,7 @@ h('div', { style: S.row },
 
       async function doEmbed() {
         if (!folder) return;
+        const scopePage = (embedScope === 'page') ? (page || '') : '';
         setLoading(true);
         try {
           // 核实嵌字工作区(缺失则创建)
@@ -2494,8 +2763,8 @@ h('div', { style: S.row },
               if (r2 && r2.ok) { setWsExists(true); setMsg('已创建工作区:' + r2.dir); }
             }
           } catch (e) { /* 工作区不影响嵌字 */ }
-          setMsg('嵌字中…');
-          const r = await runJob('embed');
+          setMsg('嵌字中…(' + (scopePage ? '此页' : '整本') + ')');
+          const r = await runJob('embed', { page: scopePage });
           await refresh();
           if (page) await loadPage(page);
           const ok = r && r.code === 0;
@@ -2504,7 +2773,7 @@ h('div', { style: S.row },
           setMsg(ok ? '确认嵌字:100% · 完成(已自动校对输出)' : '确认嵌字:失败,请看日志');
           setLog('[进度] 100% · 嵌字结束');
           // 嵌字完成:提交结果表单 + 预览给用户
-          const repLine = lines.filter((l) => l.includes('[报告]') || l.includes('[工作区]')).join('\n');
+          const repLine = lines.filter((l) => l.includes('[报告]') || l.includes('[工作区]') || l.includes('[来源]')).join('\n');
           const form = [
             '书:' + folder,
             '当前页:' + (page || '-'),
@@ -2610,6 +2879,10 @@ h('div', { style: S.row },
             }
             return;
           }
+          if (k === 'g' || k === 'G') { setGpu(!gpu); return; }        // GPU 去字(仅抹除时有效)
+          if (k === 't' || k === 'T') { run('translate'); return; }    // 翻译
+          if (k === 'o' || k === 'O') { run('ocr'); return; }          // 识别原文
+          if (k === 'F5') { reloadPage(); return; }                    // 刷新本页
           const pages = info ? info.pages : [];
           const idx = pages.findIndex((p) => p.page === page);
           if (k === 'ArrowLeft' && idx > 0) { loadPage(pages[idx - 1].page); }
@@ -2825,10 +3098,19 @@ h('div', { style: S.row },
             h('span', { style: S.chip }, `页数 ${info.pageCount}`),
             h('span', { style: S.chip }, `框 ${info.boxes}`),
             h('span', { style: S.chip }, `译 ${info.translated}`),
+            h('span', { style: { ...S.chip, opacity: 0.75 }, title: '面板前端代码版本;更新插件后若这里没变,说明面板仍在跑旧 bundle,需要完全退出 DSH 再打开' }, APP_VERSION),
           ),
           h('div', { style: S.row },
-            h('button', { type: 'button', style: S.btn, disabled: loading, onClick: () => run('ocr') }, 'OCR'),
-            h('button', { type: 'button', style: S.btn, disabled: loading, onClick: () => run('translate') }, '翻译'),
+            h('button', {
+              type: 'button', style: S.btn, disabled: loading,
+              title: '自动检测文字并加框(按右侧「范围」:此页或整本);新框标 auto,需人工更正后才参与嵌字',
+              onClick: () => run('detect'),
+            }, '自动标框'),
+            h('button', { type: 'button', style: S.btn, disabled: loading, title: 'OCR 识别原文(按右侧「范围」:此页或整本)', onClick: () => run('ocr') }, 'OCR'),
+            h('button', { type: 'button', style: S.btn, disabled: loading, title: '翻译(按右侧「范围」:此页或整本);已有译文默认跳过', onClick: () => run('translate') }, '翻译'),
+            h('label', { style: { ...S.muted, fontSize: '11px', marginLeft: '4px' }, title: '勾选后,翻译会覆盖已有译文重新翻(用于修「译文乱了/错位」)' },
+              h('input', { type: 'checkbox', checked: forceTrans, onChange: (e) => setForceTrans(!!e.target.checked) }),
+              '强制重译'),
             SEP(),
             h('button', {
               type: 'button', style: S.btn, disabled: loading,
@@ -2855,9 +3137,14 @@ h('div', { style: S.row },
                   + ' · 整本 ' + estInfo.all.boxes + ' 框 ¥' + estInfo.all.yuanMin + '~¥' + estInfo.all.yuanMax)
               : null,
             SEP(),
-            h('button', { type: 'button', style: S.btn, disabled: loading, onClick: () => run('proofread') }, '校对'),
+            h('button', {
+              type: 'button', style: S.btn, disabled: loading,
+              title: '汇总「没认出字 / 兜底也失败 / 疑似识别错 / 缺译文」的框;按右侧「范围」:此页只统计当前页,整本生成 ocr_failure_report.json(DSH 可直接读取)',
+              onClick: () => showFailures(),
+            }, '失败报告'),
+            h('button', { type: 'button', style: S.btn, disabled: loading, title: '校对(按右侧「范围」:此页或整本)', onClick: () => run('proofread') }, '校对'),
             SEP(),
-            h('button', { type: 'button', style: S.btn, disabled: loading, onClick: () => run('embed') }, '嵌字'),
+            h('button', { type: 'button', style: S.btn, disabled: loading, title: '嵌字(按右侧「范围」:此页或整本)', onClick: () => run('embed') }, '嵌字'),
             h('button', {
               type: 'button',
               style: loading ? S.btn : S.btnOn,
@@ -2869,6 +3156,19 @@ h('div', { style: S.row },
               title: '把请求写到工作区,在本对话里说「执行嵌字」后由 DSH 执行',
               onClick: () => { try { embedToChat(); } catch (e) { setMsg('提交异常:' + String(e)); } },
             }, '交给对话'),
+            h('span', { style: { ...S.muted, fontSize: '11px', marginLeft: '8px' } }, '范围(标框/OCR/翻译/校对/嵌字):'),
+            h('button', {
+              type: 'button',
+              style: embedScope === 'page' ? S.btnOn : S.btn,
+              title: '只处理当前页(推荐:先单页试,确认没问题再整本)',
+              onClick: () => { setEmbedScope('page'); setMsg('确认嵌字范围:此页(第 ' + (page || '-') + ' 页)'); },
+            }, '此页'),
+            h('button', {
+              type: 'button',
+              style: embedScope === 'book' ? S.btnOn : S.btn,
+              title: '处理整本所有已标框的页',
+              onClick: () => { setEmbedScope('book'); setMsg('确认嵌字范围:整本'); },
+            }, '整本'),
             h('span', { style: { flex: 1 } }),
             h('button', {
               type: 'button', style: S.btnDanger || S.btn,
@@ -2915,21 +3215,26 @@ h('div', { style: S.row },
           h('div', { style: S.row },
             h('button', {
               type: 'button', style: S.btn, disabled: loading,
-              title: '把本页所有框设为参与嵌字',
+              title: '本页所有框设为参与嵌字(含无译文的框;页码/UI 噪音自动跳过)',
               onClick: () => {
-                setBoxes((prev) => prev.map((b) => ({ ...b, auto: false })));
+                const ot = (pageData && pageData.texts) || [];
+                setBoxes((prev) => prev.map((b, i) => (
+                  isNoiseBox(b, ot[i]) ? b : { ...b, auto: false }
+                )));
                 markDirty();
-                setMsg('本页全部框已设为参与嵌字,点「保存」生效');
+                setMsg('本页框已设为参与嵌字(页码/UI 噪音自动跳过),点「保存」生效');
               },
             }, '本页auto→参与'),
             h('button', {
               type: 'button', style: S.btn, disabled: loading,
-              title: '只把有译文的 auto 框设为参与',
+              title: '只把本页「已有译文」的 auto 框设为参与(推荐):没译文的保持不参与,避免空框误嵌;噪音自动跳过',
               onClick: () => {
                 const tr = (pageData && pageData.trans) || [];
+                const ot = (pageData && pageData.texts) || [];
                 setBoxes((prev) => prev.map((b, i) => {
                   const has = !!(tr[i] && String(tr[i]).trim());
-                  return has ? { ...b, auto: false } : b;
+                  if (!has || isNoiseBox(b, ot[i])) return b;
+                  return { ...b, auto: false };
                 }));
                 markDirty();
                 setMsg('本页有译文的 auto 框已设为参与,点「保存」生效');
@@ -2937,7 +3242,7 @@ h('div', { style: S.row },
             }, '仅补有译文的'),
             h('button', {
               type: 'button', style: S.btn, disabled: loading,
-              title: '全书所有「有译文」的 auto 框设为参与嵌字(可能较慢)',
+              title: '遍历全书,把所有「有译文」的 auto 框设为参与嵌字(最慢;建议先保存/校对;噪音自动跳过)',
               onClick: () => autoParticipateAll(),
             }, '全书auto参与'),
             h('label', { style: { ...S.muted, fontSize: '11px', marginLeft: '4px' } },
@@ -2990,6 +3295,14 @@ h('div', { style: S.row },
                 key: d, type: 'button', style: dirMode === d ? S.btnOn : S.btn,
                 onClick: () => setDirMode(d),
               }, name)),
+            h('span', { style: { ...S.muted, fontSize: '11px', marginLeft: '10px' } }, '对齐:'),
+            [['auto', '自动'], ['left', '左'], ['center', '中'], ['right', '右']].map(([a, name]) =>
+              h('button', {
+                key: a, type: 'button',
+                style: alignMode === a ? S.btnOn : S.btn,
+                title: a === 'auto' ? '自动检测文字位置(墨迹重心)' : '',
+                onClick: () => { setAlignMode(a); setAlignTouched(true); },
+              }, name)),
           ),
           h('div', { style: S.row },
             h('button', {
@@ -3026,8 +3339,18 @@ h('div', { style: S.row },
                   }, n || '默认字体'))),
               )),
             h('div', { style: S.row },
+              h('label', {
+                style: { display: 'flex', alignItems: 'center', gap: '4px', marginLeft: '54px',
+                  fontSize: '12px', cursor: 'pointer', userSelect: 'none' },
+                title: '开启后嵌字时按原图采样字色/描边/空心字/字距,与原文风格一致(需重新嵌字生效)',
+              },
+                h('input', {
+                  type: 'checkbox', checked: followStyle,
+                  onChange: (e) => toggleFollowStyle(!!e.target.checked),
+                }),
+                '样式自动识别(跟随原文)'),
               h('button', {
-                type: 'button', style: S.btn, marginLeft: '54px',
+                type: 'button', style: S.btn, marginLeft: '10px',
                 title: '把三类样式分别应用到本页同类型框',
                 onClick: () => {
                   setBoxes((prev) => prev.map((b) => {
@@ -3048,7 +3371,7 @@ h('div', { style: S.row },
           ) : null,
           pageData ? h(Marker, {
             folder, page, data: pageData,
-            mode, setMode, kind, cover, gpu, dirMode, size, autoSize,
+            mode, setMode, kind, cover, gpu, dirMode, align: alignMode, alignTouched, size, autoSize,
             bodyStyle, sfxStyle, titleStyle, fontByKind,
             onBoxesChange: (bs) => {
               setBoxes(bs);
@@ -3059,12 +3382,28 @@ h('div', { style: S.row },
               textEdits.current.set(i, { orig, trans });
               markDirty();
             },
+            onSelect: (b) => {
+              if (!b) return;
+              try {
+                setKind(kindOfBox(b));
+                setCover(coverOfBox(b));
+                setGpu(!!(b.gpu !== undefined ? b.gpu : b.lama));
+                setDirMode(b.vertical === 'auto' || b.vertical === undefined ? 'auto' : (b.vertical ? 'v' : 'h'));
+                setSize(String(b.size || 20));
+                setAutoSize(!b.size_fixed);
+                const _al = String(b.align || 'auto');
+                setAlignMode(_al === 'auto' ? 'auto' : _al); setAlignTouched(false);
+                const _k = kindOfBox(b);
+                if (b.style) { if (_k === 'title') setTitleStyle(b.style); else if (_k === 'plain') setSfxStyle(b.style); else setBodyStyle(b.style); }
+                setFontByKind((prev) => ({ ...prev, [_k]: b.font || '' }));
+              } catch (e) { /* ignore */ }
+            },
             onRefresh: () => reloadPage(),
             reloadTick,
           }) : null,
           h('div', { style: { ...S.muted, marginTop: '4px' } },
             '单击框 = 编辑属性(选中后改设置实时写回) · 双击框 = 编辑文字(原文/译文) · 左键拖框/自由框选 · 右键删框 · '
-            + 'N=切类型 · E=切原文处理(直盖→抹除→覆盖) · V/H=竖/横 · A=自动 · Ctrl+Z 撤销 · Ctrl+S 保存 · ←/→ 翻页'),
+            + 'B/P=框选/自由框选 · 1/2/3=类型 · N=切类型 · E=切原文处理 · V/H=竖/横 · A=自动 · G=GPU · T=翻译 · O=识别 · Ctrl+Z 撤销 · Ctrl+S 保存 · ←/→ 翻页 · F5 刷新'),
         ) : null,
         log ? h('div', { style: S.log }, log) : null,
         // 底部常驻提示:固定在最下面、黄色纯文字、无背景,不挡点击

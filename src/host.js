@@ -3,7 +3,7 @@
  * sidebar panel and runs the local workflow scripts on request.
  */
 import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, statSync, unlinkSync, copyFileSync, rmSync } from 'node:fs'
-import { spawn, execFileSync } from 'node:child_process'
+import { spawn, spawnSync, execFileSync } from 'node:child_process'
 import { ensureProject, findProject, ensureDoneDir, listProjects, touchProject, projectsRoot, doneRoot } from './project.js'
 import path from 'node:path'
 import os from 'node:os'
@@ -395,7 +395,8 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
   // rememberPathDesktop: 桌面端是否记住上次文件夹(仅桌面端改)
   const uiSettingsFile = () => path.join(os.homedir(), '.manga-workflow', 'settings.json')
   const UI_DEFAULTS = { sidebarEnabled: true, bannerEnabled: true,
-    rememberPathWeb: true, rememberPathDesktop: true, workspaceDir: '' }
+    rememberPathWeb: true, rememberPathDesktop: true, bubbleErase: true,
+    sfxErase: false, workspaceDir: '' }
   function readUiSettings() {
     const d = loadJson(uiSettingsFile())
     const out = { ...UI_DEFAULTS }
@@ -862,13 +863,28 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
     try { if (existsSync(BRIDGE_FILE)) unlinkSync(BRIDGE_FILE) } catch (e) { /* ignore */ }
   }
 
-  async function runStep(folder, step, onData, jobId) {
+  function eraseEnv() {
+    const ui = readUiSettings()
+    return {
+      MANGA_BUBBLE_ERASE: ui.bubbleErase === false ? '0' : '1',
+      MANGA_SFX_ERASE: ui.sfxErase === true ? '1' : '0',
+    }
+  }
+
+  async function runStep(folder, step, onData, jobId, opts) {
+    const onlyPage = (opts && opts.page) ? String(opts.page) : ''
+    const forceOverwrite = !!(opts && opts.overwrite)
     const pd = projDir(folder)   // 项目数据目录(框/译文/成品都在这里)
-    const env = { ...runtimeEnv, MANGA_ENV_DIR: envDirCfg(), MANGA_DATA_DIR: pd }
+    const env = { ...runtimeEnv, MANGA_ENV_DIR: envDirCfg(), MANGA_DATA_DIR: pd, ...eraseEnv() }
     let args = null
     let label = step
-    if (step === 'ocr') {
+    if (step === 'detect') {
+      // 自动标框:mode=all 检测所有文字(气泡+拟声),bubble 只检气泡
+      args = [scriptPath('detect_book.py'), folder, '--mode', config.detectMode === 'bubble' ? 'bubble' : 'all']
+      if (onlyPage) args.push('--page', onlyPage)
+    } else if (step === 'ocr') {
       args = [scriptPath('ocr_regions.py'), folder, '--lang', config.lang || 'ja']
+      if (onlyPage) args.push('--page', onlyPage)
     } else if (step === 'translate') {
       // 按优先级选引擎:DSH 模型 / AI(高)> 免费(低)
       const tcfg0 = readTransCfg()
@@ -876,7 +892,7 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
         ? tcfg0.engines : ['ai', 'google', 'mymemory']
       if (picked0.includes('dsh') && llmReady()) {
         try {
-          const n = await dshTranslateFolder(folder, null, onData, tcfg0.overwrite !== false)
+          const n = await dshTranslateFolder(folder, onlyPage || null, onData, forceOverwrite || tcfg0.overwrite !== false)
           return { code: 0, out: `[DSH 翻译] 完成 ${n} 条\n`, err: '', label }
         } catch (e) {
           if (onData) onData(`[DSH 翻译] 失败,回退其它引擎:${String((e && e.message) || e)}\n`)
@@ -898,14 +914,17 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
       }
       args = [scriptPath('translate.py'), folder, '--engines', eng.join(','),
               '--from', config.lang || 'ja']
-      if (tcfg.overwrite !== false) args.push('--overwrite')
+      if (forceOverwrite || tcfg.overwrite !== false) args.push('--overwrite')
       if (tcfg.proxy) args.push('--proxy', tcfg.proxy)
+      if (onlyPage) args.push('--page', onlyPage)
     } else if (step === 'proofread') {
       args = [scriptPath('proofread.py'), folder, '--stage', 'pre', '--mode', config.proofMode || 'both']
+      if (onlyPage) args.push('--page', onlyPage)
     } else if (step === 'embed') {
       args = [scriptPath('embed_regions.py'), folder,
               path.join(pd, 'regions.json'), path.join(pd, 'trans.json'), path.join(pd, 'out_lama')]
       if (config.lama) args.push('--lama')
+      if (onlyPage) args.push('--page', onlyPage)
     } else if (step === 'bench') {
       args = [toolPath('bench.py'), folder, '--tools', scriptsDir]
       if (config.benchAll) args.push('--all')
@@ -933,6 +952,11 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
           '', '## 日志(末段)', '', '```', tail, '```', '',
         ].join('\n'), 'utf8')
         out += '\n[报告] ' + rep + '\n'
+        // 来源标注:把 provenance_report.md 一并带进日志,面板/对话都能看到
+        try {
+          const pv = path.join(pd, 'out', 'provenance_report.md')
+          if (existsSync(pv)) out += '[来源]\n' + readFileSync(pv, 'utf8').slice(0, 2000) + '\n'
+        } catch (e) { /* 忽略 */ }
         // 写入工作区 + 待汇报队列(供对话汇报)
         try {
           const ws = String(readUiSettings().workspaceDir || '').trim()
@@ -981,12 +1005,16 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
       if (oc.mode && oc.mode !== 'off') {
         const fb = path.join(scriptsDir, 'ocr_fallback.py')
         if (existsSync(fb)) {
-          const fbArgs = [fb, folder, '--mode', oc.mode,
-            '--min-chars', String(oc.minChars), '--max', String(oc.maxPerBook),
-            '--short-auto', oc.shortAuto === false ? '0' : '1',
-            '--short-max', String(oc.shortMax || 5)]
+          // 自动兜底只补「空框」，并限时/限量，避免整本短句把 OCR 卡住
+          const fbMode = oc.mode === 'all' || oc.mode === 'short' ? 'empty' : oc.mode
+          const fbMax = Math.min(Number(oc.maxPerBook) || 8, 8)
+          const fbArgs = [fb, folder, '--mode', fbMode,
+            '--min-chars', String(oc.minChars),
+            '--max', String(fbMax),
+            '--short-auto', '0',
+            '--budget', '240']
           if (config.lang) fbArgs.push('--lang', config.lang)
-          const hdr = `\n--- OCR 兜底(mode=${oc.mode}, 上限 ${oc.maxPerBook} 框) ---\n`
+          const hdr = `\n--- OCR 兜底(mode=${fbMode}, 最多 ${fbMax} 框 / 240s) ---\n`
           if (onData) onData(hdr)
           out += hdr
           const r2 = await runProcess(pythonPath, fbArgs, env, onData, jobId)
@@ -2040,6 +2068,82 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
       return json(res, 200, infra(root || path.dirname(scriptsDir)))
     }
 
+    if (name === 'failure-report') {
+      // 读取 OCR/翻译失败报告(脚本在 OCR/兜底结束后自动写);没有则现算一次。
+      // 用 spawnSync 而不是 execFileSync:脚本在「0 框」时返回 exit=2,execFileSync 会抛异常导致误报"没有报告"。
+      const _frPage = url.searchParams.get('page') || ''
+      const pd = projDir(folder)
+      const py = pickPython(true)
+      const script = scriptPath('failure_report.py')
+      const _runFR = (args) => {
+        if (!(py && py.path && existsSync(script))) return { spawn: false, error: '找不到 Python 或 failure_report.py' }
+        const r = spawnSync(py.path, [script, folder, ...args], {
+          env: { ...process.env, MANGA_DATA_DIR: pd, PYTHONIOENCODING: 'utf-8' },
+          windowsHide: true, timeout: 60000, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024,
+        })
+        return { spawn: true, status: r.status, out: String(r.stdout || ''), err: String(r.stderr || ''), error: r.error ? String(r.error.message || r.error) : '' }
+      }
+      if (_frPage) {
+        const r = _runFR(['--page', _frPage, '--print'])
+        if (!r.spawn) return json(res, 500, { ok: false, error: r.error })
+        const _ln = r.out.trim().split('\n').filter(Boolean).pop() || ''
+        try {
+          const j = JSON.parse(_ln)
+          return json(res, 200, { ok: true, report: j, markdown: '', page: _frPage })
+        } catch (e) {
+          return json(res, 500, {
+            ok: false,
+            error: '现算失败:' + (r.error || r.err || _ln || '脚本无输出').toString().slice(0, 300),
+          })
+        }
+      }
+      const jp = path.join(pd, 'ocr_failure_report.json')
+      const mp = path.join(pd, 'ocr_failure_report.md')
+      if (!existsSync(jp)) _runFR([])   // 生成整本报告(忽略退出码)
+      let j = null, md = ''
+      try { j = JSON.parse(readFileSync(jp, 'utf8')) } catch (e) { j = null }
+      try { md = readFileSync(mp, 'utf8') } catch (e) { md = '' }
+      if (!j) {
+        return json(res, 404, {
+          ok: false, code: 'NO_REPORT',
+          error: '这本还没生成失败报告:先跑一次「OCR识别」或「单页识图翻译」,或确认这本书确实没有失败框',
+        })
+      }
+      return json(res, 200, { ok: true, report: j, markdown: md })
+    }
+    if (name === 'project-config') {
+      // 项目级开关(目前:follow_style 样式跟随原文),读写项目 config.json
+      const cfgPath = path.join(projDir(folder), 'config.json')
+      const readCfg = () => {
+        try {
+          return JSON.parse(fs.readFileSync(cfgPath, 'utf8')) || {}
+        } catch (e) { return {} }
+      }
+      if (req.method === 'POST') {
+        let body = {}
+        try { body = JSON.parse((await readBody(req)) || '{}') || {} } catch (e) { body = {} }
+        const cfg = readCfg()
+        if (typeof body.follow_style === 'boolean') cfg.follow_style = body.follow_style
+        if (typeof body.sfx_erase === 'boolean') cfg.sfx_erase = body.sfx_erase
+        try {
+          fs.mkdirSync(path.dirname(cfgPath), { recursive: true })
+          fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 1), 'utf8')
+          send(res, 200, { ok: true, config: cfg })
+        } catch (e) {
+          send(res, 500, { ok: false, error: String((e && e.message) || e) })
+        }
+        return true
+      }
+      const cfg = readCfg()
+      send(res, 200, {
+        ok: true,
+        config: cfg,
+        follow_style: cfg.follow_style !== false,
+        sfx_erase: cfg.sfx_erase === true,
+      })
+      return true
+    }
+
     if (name === 'status') {
       if (!folder || !existsSync(folder)) return json(res, 400, { error: '文件夹不存在' })
       return json(res, 200, await status(folder))
@@ -2137,7 +2241,7 @@ export function createMangaDesk({ pythonPath: pythonPathCfg, scriptsDir: scripts
       const id = 'j' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
       const job = { id, step: body.step, folder: body.folder, status: 'running', code: null, log: '', started: Date.now() }
       jobs.set(id, job)
-      runStep(body.folder, body.step, (t) => { job.log += t }, job.id)
+      runStep(body.folder, body.step, (t) => { job.log += t }, job.id, { page: body.page || '' })
         .then((r) => {
           if (job.status === 'running') {
             job.status = 'done'

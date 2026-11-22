@@ -6,8 +6,26 @@
 import sys, os, json
 import numpy as np
 from PIL import Image
+import os as _os0, tempfile as _tf0
+def _easy_dir0():
+    _d = _os0.environ.get('MANGA_DATA_DIR') or ''
+    if _d:
+        _p = _os0.path.abspath(_d).split(_os0.sep)
+        for _i in range(len(_p), 0, -1):
+            _c = _os0.path.join(_os0.sep.join(_p[:_i]), '_easyocr')
+            try:
+                _os0.makedirs(_c, exist_ok=True); return _c
+            except Exception: pass
+    _c = _os0.path.join(_tf0.gettempdir(), 'manga_easyocr')
+    _os0.makedirs(_c, exist_ok=True); return _c
+_os0.environ.setdefault('EASYOCR_MODULE_PATH', _easy_dir0())
 import easyocr
-from detect_boxes import analyze, in_bubble, merge_fragments, _is_body
+from detect_boxes import (analyze, in_bubble, merge_fragments, merge_bubble_columns, _is_body,
+                          classify_scene, split_tall_bands, drop_contained, absorb_row_fragments,
+                          looks_like_dialogue)
+
+def _dd(p):
+    return os.environ.get('MANGA_DATA_DIR') or p
 
 EXTS = ('.webp', '.png', '.jpg', '.jpeg', '.bmp')
 DEFAULT_BOX = {'vertical': True, 'size': 20, 'nobox': False, 'color': 'black', 'outline': False, 'auto': True}
@@ -15,7 +33,7 @@ DEFAULT_BOX = {'vertical': True, 'size': 20, 'nobox': False, 'color': 'black', '
 
 def main():
     src = sys.argv[1]
-    regions_file = os.path.join(src, 'regions.json')
+    regions_file = os.path.join(_dd(src), 'regions.json')
     regions = {}
     if os.path.exists(regions_file):
         try:
@@ -31,8 +49,23 @@ def main():
     elif '--all' in sys.argv:
         mode = 'all'
     bubble_only = (mode == 'bubble')
+    only_page = ''
+    if '--page' in sys.argv:
+        _i = sys.argv.index('--page')
+        if _i + 1 < len(sys.argv):
+            only_page = sys.argv[_i + 1]
     pages = sorted(f for f in os.listdir(src) if f.lower().endswith(EXTS))
-    reader = easyocr.Reader(['ko'], gpu=True, verbose=False)
+    if only_page:
+        pages = [f for f in pages if os.path.splitext(f)[0] == only_page]
+        if not pages:
+            print('[自动标框] 找不到页面 %s -> 退出' % only_page, flush=True)
+            return 2
+    print('[检测] 正在加载 EasyOCR 模型(首次约 30-60 秒,属正常,不是卡死)…', flush=True)
+    try:
+        reader = easyocr.Reader(['ko'], gpu=True, verbose=False)
+    except Exception:
+        reader = easyocr.Reader(['ko'], gpu=False, verbose=False)
+    print('[检测] 模型就绪,开始逐页检测', flush=True)
 
     total_boxes = 0
     total_dropped = 0
@@ -65,10 +98,13 @@ def main():
                 return
             seen.add(k)
             inb = in_bubble(labels, stats, holes, H, W, x0, y0, w, h, gray=gray)
-            if bubble_only and not inb:
+            # 场景判定只在 all 模式启用;bubble 模式保持原逻辑(不动正常气泡页)
+            scene = classify_scene(gray, inb, x0, y0, w, h, allow_dark=True, page_h=H) if mode == 'all' else None
+            # bubble 模式保持原语义:只留气泡内的框(横带只在 all 模式出,避免动到正常页)
+            if bubble_only and (not inb):
                 dropped += 1
                 return
-            if mode == 'sfx' and inb:
+            if mode == 'sfx' and (inb or scene == 'band'):
                 dropped += 1
                 return
             # 跳过与已有标注重叠的框(不再把已标注的框重新标一遍)
@@ -90,8 +126,10 @@ def main():
                 except Exception:
                     continue
             b = dict(DEFAULT_BOX)
-            _kind = 'body' if _is_body(gray, inb, x0, y0, w, h) else 'plain'
+            _kind = 'body' if ((scene == 'band') or _is_body(gray, inb, x0, y0, w, h)) else (
+                'body' if looks_like_dialogue(gray, x0, y0, w, h) else 'plain')
             b.update({'x': x0, 'y': y0, 'w': w, 'h': h, 'kind': _kind,
+                      'scene': scene,
                       'sfx': _kind == 'plain', 'erase': False,
                       'cover': 'overlay' if _kind == 'plain' else 'cover'})
             new_boxes.append(b)
@@ -106,7 +144,20 @@ def main():
                 ys = [p[1] for p in poly]
                 add(min(xs), min(ys), max(xs), max(ys))
 
-        new_boxes = merge_fragments(new_boxes)   # 合并被拆碎的碎片
+        new_boxes = merge_fragments(new_boxes, page_w=W, page_h=H)   # 合并碎片(带面积/填充率约束)
+        new_boxes = merge_bubble_columns(new_boxes, gray=gray)                  # 同一气泡内竖排多列 -> 一框
+        if mode == 'all':
+            new_boxes = split_tall_bands(new_boxes, gray, page_w=W)  # 两行被合成一框时再切开(all 模式)
+            new_boxes = drop_contained(new_boxes)                    # 去掉嵌套/重复框
+            new_boxes = absorb_row_fragments(new_boxes)              # 行框吸收同排列碎片
+            new_boxes = split_tall_bands(new_boxes, gray, page_w=W)   # 吸收后再切一次(吸收会把相邻行合回)
+            new_boxes.sort(key=lambda b: (b['y'], b['x']))            # 统一按阅读顺序(y,x)编号,方便译文对齐
+            # 过滤「整块马赛克/大插图」类误检:free 场景且面积>5%、高度>20% 页高
+            _pg_area = max(1, W * H)
+            new_boxes = [b for b in new_boxes
+                         if not (b.get('scene') in (None, 'free')
+                                 and (b['w'] * b['h']) / _pg_area > 0.05
+                                 and b['h'] > 0.2 * H)]
         if new_boxes:
             regions[key] = existing + new_boxes
         total_boxes += len(new_boxes)

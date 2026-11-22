@@ -46,6 +46,7 @@ class MarkTool:
         self.dir_mode = tk.StringVar(value="auto")  # 方向:自动检测 / 横排 / 竖排
         self.vertical = tk.BooleanVar(value=True)  # 兼容旧代码(非 auto 时同步)
         self.size = tk.StringVar(value="20")       # 字号(新框默认)
+        self.align_mode = tk.StringVar(value="自动")   # 标题对齐:自动/靠左/居中/靠右
         self.erase = tk.BooleanVar(value=True)     # 兼容旧代码(=cover=='erase')
         self.sfx = tk.BooleanVar(value=False)      # 兼容旧代码(=kind=='plain')
         # 可视化文字样式:正文 / 拟声 / 标题 三组
@@ -66,6 +67,8 @@ class MarkTool:
         self._syncing = False     # 防止设置变量联动时递归
         self.auto_size = tk.BooleanVar(value=True)    # 嵌字时自动检测原文字号
         self.auto_dir = tk.BooleanVar(value=True)     # 嵌字时自动检测横竖
+        _fs0 = self._cfg_val(regions_file, 'follow_style', True)
+        self.follow_style = tk.BooleanVar(value=(_fs0 is not False))  # 嵌字时跟随原文样式(字色/描边/空心/字距)
         self.use_lama = tk.BooleanVar(value=self._cfg_lama(regions_file))  # 嵌字时用 GPU(LaMa)去字
         self.lang = tk.StringVar(value=self._cfg_val(regions_file, 'lang', 'ja'))  # 原文语言 ja/ko
         self.scope = tk.StringVar(value="page")   # 处理范围:page=当前页 / book=整本
@@ -197,10 +200,26 @@ class MarkTool:
             _has_gpu = any(styles.gpu_of(x) for arr in self.regions.values() for x in arr)
             json.dump({'lama': bool(_has_gpu), 'lang': self.lang.get(),
                        'auto_size': bool(self.auto_size.get()),
-                       'auto_dir': (self.dir_mode.get() == 'auto')},
+                       'auto_dir': (self.dir_mode.get() == 'auto'),
+                       'follow_style': bool(self.follow_style.get())},
                       open(cfg_path, 'w', encoding='utf-8'))
         except Exception:
             pass
+
+    def _write_follow_style(self):
+        """立即把「样式自动识别」写进 config.json(嵌字时脚本读取 follow_style)。"""
+        try:
+            cfg_path = os.path.join(os.path.dirname(self.regions_file), 'config.json')
+            try:
+                cfg = json.load(open(cfg_path, encoding='utf-8'))
+            except Exception:
+                cfg = {}
+            cfg['follow_style'] = bool(self.follow_style.get())
+            json.dump(cfg, open(cfg_path, 'w', encoding='utf-8'), ensure_ascii=False)
+            self.status.config(text='样式自动识别(跟随原文样式):' +
+                                    ('开' if self.follow_style.get() else '关') + ' —— 重新嵌字生效')
+        except Exception as e:
+            self.status.config(text='写入样式开关失败:%s' % e)
 
     def _page_key(self):
         return os.path.splitext(self.pages[self.idx])[0]
@@ -280,6 +299,14 @@ class MarkTool:
         _sep(top1b)
         # ③ 翻译 / 校对
         tk.Button(top1b, text="翻译", command=self.translate_text).pack(side=tk.LEFT, padx=(0, 4))
+        self.force_trans = tk.BooleanVar(value=bool(self.trans_cfg.get('overwrite', True)))  # 强制重译(与翻译设置同一开关)
+        _cb_force = tk.Checkbutton(top1b, text="强制重译", variable=self.force_trans,
+                                   command=self._toggle_force_trans)
+        _cb_force.pack(side=tk.LEFT, padx=(0, 8))
+        try:
+            _cb_force.configure(fg='#b45309')
+        except Exception:
+            pass
         tk.Button(top1b, text="校对", command=self.proofread_pre).pack(side=tk.LEFT, padx=4)
         ttk.Combobox(top1b, textvariable=self.proof_mode, values=["原文+译文", "只校原文"],
                      width=9, state='readonly').pack(side=tk.LEFT, padx=(0, 2))
@@ -344,8 +371,18 @@ class MarkTool:
         tk.Label(top2b, text="方向:", fg='#2a5d8f').pack(side=tk.LEFT)
         for _v, _t in (('auto', '自动检测'), ('v', '竖排'), ('h', '横排')):
             tk.Radiobutton(top2b, text=_t, variable=self.dir_mode, value=_v).pack(side=tk.LEFT)
+        tk.Label(top2b, text="对齐:", fg='#2a5d8f').pack(side=tk.LEFT, padx=(8, 0))
+        self._align_combo = ttk.Combobox(top2b, textvariable=self.align_mode, width=6,
+                                         state='readonly', values=['自动', '靠左', '居中', '靠右'])
+        self._align_combo.pack(side=tk.LEFT)
+        self._align_combo.bind('<<ComboboxSelected>>', self._align_done)
+        self._align_hint = tk.Label(top2b, text='', fg='#888', font=('Microsoft YaHei', 8))
+        self._align_hint.pack(side=tk.LEFT, padx=(4, 0))
         self._style_btn = tk.Button(top2b, text="样式 ▸", width=7, command=self._toggle_style_bar)
         self._style_btn.pack(side=tk.LEFT, padx=(6, 0))
+        tk.Checkbutton(top2b, text="跟随样式", variable=self.follow_style,
+                       command=self._write_follow_style
+                       ).pack(side=tk.LEFT, padx=(6, 0))
         tk.Label(top2b, text="语言:").pack(side=tk.LEFT, padx=(10, 0))
         tk.Radiobutton(top2b, text="日", variable=self.lang, value="ja").pack(side=tk.LEFT)
         tk.Radiobutton(top2b, text="韩", variable=self.lang, value="ko").pack(side=tk.LEFT)
@@ -358,9 +395,11 @@ class MarkTool:
         self._build_style_group(style_bar, 'body', '正文')
         self._build_style_group(style_bar, 'sfx', '拟声')
         self._build_style_group(style_bar, 'title', '标题')
-        tk.Button(style_bar, text='应用到本页', width=9, command=self.apply_style_page
+        _btnrow = tk.Frame(style_bar)
+        _btnrow.pack(side=tk.TOP, fill=tk.X, pady=(2, 0))
+        tk.Button(_btnrow, text='应用到本页', width=9, command=self.apply_style_page
                   ).pack(side=tk.LEFT, padx=(4, 0))
-        tk.Button(style_bar, text='应用到全部', width=9, command=self.apply_style_all
+        tk.Button(_btnrow, text='应用到全部', width=9, command=self.apply_style_all
                   ).pack(side=tk.LEFT, padx=(2, 0))
         self._style_visible = False   # 默认收起文字样式栏
         try:
@@ -378,6 +417,10 @@ class MarkTool:
         try:
             self.gpu.trace_add('write', lambda *a: self._apply_current_to_sel())
             self.gpu.trace_add('write', self._remember_gpu)
+        except Exception:
+            pass
+        try:
+            self.auto_size.trace_add('write', lambda *a: self._apply_current_to_sel())
         except Exception:
             pass
 
@@ -792,8 +835,32 @@ class MarkTool:
             if cmb is not None:
                 cmb.set(fv or '默认')
             self._on_cover_change()
+            _al = str(b.get('align') or 'auto')
+            self.align_mode.set({'left': '靠左', 'center': '居中', 'right': '靠右'}.get(_al, '自动'))
+            self._align_touched = False
+            try:
+                if b.get('align_auto') and _al in ('left', 'center', 'right'):
+                    self._align_hint.config(text='(自动判定:%s,可改)' % {'left': '左', 'center': '中', 'right': '右'}[_al])
+                else:
+                    self._align_hint.config(text='')
+            except Exception:
+                pass
         finally:
             self._syncing = False
+
+    def _align_done(self, _evt=None):
+        self._align_touched = True
+        """对齐下拉选完后取消文本选中高亮并把焦点交回画布,避免长期蓝色高亮。"""
+        try:
+            self._align_combo.selection_clear()
+            self._align_combo.selection_range(0, 0)
+        except Exception:
+            pass
+        try:
+            self.canvas.focus_set()
+        except Exception:
+            pass
+        self._apply_current_to_sel()
 
     def _apply_current_to_sel(self, *_):
         """把工具栏当前设置写回选中的框(类型/原文处理/GPU/方向/字号/样式)。"""
@@ -811,6 +878,16 @@ class MarkTool:
         b['cover'] = cover
         b['vertical'] = 'auto' if dirm == 'auto' else (dirm == 'v')
         b['size'] = self._size_val()
+        if bool(self.auto_size.get()):
+            b.pop('size_fixed', None)
+        else:
+            b['size_fixed'] = True
+        if getattr(self, '_align_touched', False):
+            _am = self.align_mode.get()
+            b['align'] = {'自动': 'auto', '靠左': 'left', '居中': 'center',
+                          '靠右': 'right'}.get(_am, 'auto')
+            b.pop('align_auto', None)
+            self._align_touched = False
         b['erase'] = (cover == 'erase')
         b['sfx'] = (kind == 'plain')
         if cover == 'erase':
@@ -840,7 +917,9 @@ class MarkTool:
 
     # ---------- 可视化样式库 ----------
     def _build_style_group(self, parent, kind, title):
-        frame = tk.Frame(parent)
+        row = tk.Frame(parent)
+        row.pack(side=tk.TOP, fill=tk.X, pady=(0, 1))
+        frame = tk.Frame(row)
         frame.pack(side=tk.LEFT, padx=(0, 10))
         ids = {'body': styles.BODY_IDS, 'sfx': styles.SFX_IDS,
                'title': styles.TITLE_IDS}[kind]
@@ -1167,6 +1246,10 @@ class MarkTool:
             self.trans_cfg['overwrite'] = bool(ov_var.get())
             _save_trans_cfg(self.trans_cfg)
             self.trans_cfg = _load_trans_cfg()
+            try:
+                self.force_trans.set(bool(self.trans_cfg.get('overwrite', True)))   # 同步工具栏勾选
+            except Exception:
+                pass
             dlg.destroy()
             self.status.config(text='翻译设置已保存(双端共享)')
 
@@ -1477,6 +1560,8 @@ class MarkTool:
             run_engines = ['google', 'mymemory']
         trans_cmd = [vpy, os.path.join(here, 'translate.py'), self.src_dir,
                      '--engines', ','.join(run_engines), '--from', self.lang.get()]
+        if self.trans_cfg.get('overwrite', True):
+            trans_cmd += ['--overwrite']
         proxy = (self.trans_cfg.get('proxy') or '').strip()
         if proxy:
             trans_cmd += ['--proxy', proxy]
@@ -1714,10 +1799,26 @@ class MarkTool:
             self._job_busy_msg()
             return
         self._save()
+        key = self._page_key()
+        # 付费入口:先给框数/花费预估,用户确认后才调用视觉引擎
+        try:
+            _n = len((self.regions.get(key) or []))
+        except Exception:
+            _n = 0
+        _lo = max(0.01, _n * 0.01)
+        _hi = max(0.02, _n * 0.02)
+        _what = '拟声识别填词' if sfx else '单页识图翻译'
+        if not messagebox.askokcancel(
+                _what + ' · 费用预估',
+                '本页(第 %s 页)有 %d 个框。\n\n'
+                '将调用「视觉引擎(付费)」重新识别本页文字,\n'
+                '再交给 DSH 翻译(不额外计费)。\n\n'
+                '预估花费:¥%.2f ~ ¥%.2f\n\n继续吗?' % (key, _n, _lo, _hi)):
+            self.status.config(text='已取消(未调用付费视觉引擎)')
+            return
         here, vpy, env = self._job_env()
         env['PYTHONIOENCODING'] = 'utf-8'
         env['MANGA_DATA_DIR'] = getattr(self, 'data_dir', self.src_dir)
-        key = self._page_key()
         cmd = [vpy, os.path.join(here, 'ocr_fallback.py'), self.src_dir,
                '--mode', 'all', '--force', '--page', key]
         name = '拟声识别填词' if sfx else '单页识图翻译'
@@ -1970,6 +2071,12 @@ class MarkTool:
         env['HF_HOME'] = os.path.join(BASE, '_hfcache')
         env['EASYOCR_MODULE_PATH'] = os.path.join(BASE, '_easyocr')
         env['PYTHONIOENCODING'] = 'utf-8'
+        try:
+            _ui = _load_ui_cfg()
+            env['MANGA_BUBBLE_ERASE'] = '1' if _ui.get('bubbleErase', True) else '0'
+            env['MANGA_SFX_ERASE'] = '1' if _ui.get('sfxErase', False) else '0'
+        except Exception:
+            pass
         return here, vpy, env
 
     def _key(self, action):
@@ -2072,6 +2179,20 @@ class MarkTool:
             pass
         try:
             self._tui_timer = self.root.after(700, self._save_tool_ui_now)
+        except Exception:
+            pass
+
+    def _toggle_force_trans(self):
+        """工具栏「强制重译」与翻译设置共用同一配置项,避免两处状态不一致。"""
+        self.trans_cfg['overwrite'] = bool(self.force_trans.get())
+        try:
+            _save_trans_cfg(self.trans_cfg)
+        except Exception:
+            pass
+        try:
+            self.status.config(text='强制重译:%s(翻译会%s覆盖已有译文)'
+                               % ('开' if self.force_trans.get() else '关',
+                                  '' if self.force_trans.get() else '不'))
         except Exception:
             pass
 
@@ -2579,7 +2700,8 @@ def _save_trans_cfg(d):
 # sidebarEnabled      : 是否在 DSH 侧边栏显示「漫画工作台」(双端共享)
 # rememberPathWeb     : 网页端是否记住上次路径(网页端改)
 # rememberPathDesktop : 桌面端是否记住上次路径(桌面端改)
-_UI_DEFAULTS = {'sidebarEnabled': True, 'bannerEnabled': True, 'rememberPathWeb': True, 'rememberPathDesktop': True}
+_UI_DEFAULTS = {'sidebarEnabled': True, 'bannerEnabled': True, 'rememberPathWeb': True,
+                'rememberPathDesktop': True, 'bubbleErase': True, 'sfxErase': False}
 
 
 def _version_cache_file():
@@ -2726,13 +2848,44 @@ def _save_last(d):
         pass
 
 
+def _apply_window_icon(root):
+    """窗口/任务栏图标:优先用高分辨率 PNG(iconphoto),失败再退回 .ico。
+
+    说明:Windows 用 ico 时任务栏固定取 16/24px 小图,插画会糊;
+    改用 1024/512 PNG 交给系统缩放,观感通常更好(部分 Electron 应用也这么做)。
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    ico = os.path.join(here, 'app.ico')
+    pngs = [os.path.join(here, f) for f in ('icon-1024.png', 'icon-512.png', 'icon.png')]
+    ok_png = False
+    for png in pngs:
+        try:
+            if not os.path.exists(png):
+                continue
+            _img = tk.PhotoImage(file=png)
+            root.iconphoto(True, _img)
+            root._icon_refs = getattr(root, '_icon_refs', []) + [_img]   # 防止被 GC
+            ok_png = True
+            break
+        except Exception:
+            continue
+    if not ok_png:
+        try:
+            if os.path.exists(ico):
+                root.iconbitmap(default=ico)
+        except Exception:
+            pass
+
+
 def _open_editor(src, regions):
     _save_last(src)          # 记住本次工作目录
     root = tk.Tk()
     root.title("漫画汉化 · 标框工具 " + APP_VERSION)
+    _apply_window_icon(root)
     root.geometry("1680x1020")
     try:
-        root.minsize(1500, 700)
+        # 允许缩窄:最小 1024×640(原先 1500×700 导致“只能拉高、不能缩窄”)
+        root.minsize(1024, 640)
     except Exception:
         pass
     try:
@@ -3051,7 +3204,7 @@ def _style_preview_photo(style_id, w=54, h=30, font=''):
 
 
 # ---------------- 版本 ----------------
-APP_VERSION = 'V1.15.20'
+APP_VERSION = 'V1.16'
 
 # ---------------- 帮助窗口(程序内渲染,不依赖 .md 文件关联)----------------
 
@@ -3616,6 +3769,13 @@ def _show_settings(parent, book_dir=None):
     uf2.pack(fill=tk.X, pady=(2, 0))
     tk.Label(uf2, text='', width=10).pack(side=tk.LEFT)
     tk.Checkbutton(uf2, text='启动提示弹窗(双端共享,仅网页端显示)', variable=v_banner).pack(side=tk.LEFT)
+    v_bubble = tk.BooleanVar(value=bool(_ui.get('bubbleErase', True)))
+    v_sfx = tk.BooleanVar(value=bool(_ui.get('sfxErase', False)))
+    uf3 = tk.Frame(frm)
+    uf3.pack(fill=tk.X, pady=(2, 0))
+    tk.Label(uf3, text='嵌字擦除', width=10, anchor='w').pack(side=tk.LEFT)
+    tk.Checkbutton(uf3, text='气泡内正文擦除(推荐)', variable=v_bubble).pack(side=tk.LEFT)
+    tk.Checkbutton(uf3, text='拟声词也擦除原字(复杂背景会糊)', variable=v_sfx).pack(side=tk.LEFT, padx=(12, 0))
 
     # 缓存 / 模型管理(走 DSH 桥,与网页端同一套接口)
     cf = tk.Frame(frm)
@@ -3677,6 +3837,8 @@ def _show_settings(parent, book_dir=None):
                 'rememberPathDesktop': bool(v_remember.get()),
                 'sidebarEnabled': bool(v_sidebar.get()),
                 'bannerEnabled': bool(v_banner.get()),
+                'bubbleErase': bool(v_bubble.get()),
+                'sfxErase': bool(v_sfx.get()),
             })
             _save_cost_cfg({'priceIn': e_pin.get().strip(), 'priceOut': e_pout.get().strip()})
             _save_ocr_cfg({
@@ -3826,6 +3988,7 @@ def show_home():
     except Exception:
         root = tk.Tk()
     root.title("漫画汉化工具 · 主页 " + APP_VERSION)
+    _apply_window_icon(root)
     root.geometry("680x430")
     root.resizable(False, False)
 

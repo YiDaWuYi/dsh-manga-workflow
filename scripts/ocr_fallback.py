@@ -233,6 +233,7 @@ def main():
 
     mode = arg('--mode', str, mode)
     min_chars = arg('--min-chars', int, min_chars)
+    budget = arg('--budget', int, 0)
     if short_auto is None:
         short_auto = bool(cfg.get('shortAuto', True))
     short_max = int(cfg.get('shortMax', 5) or 5)
@@ -331,6 +332,10 @@ def main():
     t0 = time.time()
 
     for n, c in enumerate(cands, 1):
+        if budget and (time.time() - t0) > budget:
+            print('[视觉兜底] 已达时间上限 %ds，停止（剩余 %d 框留待手动/下次）'
+                  % (budget, len(cands) - n + 1), flush=True)
+            break
         img = pages_map.get(c['page'])
         if not img:
             failed += 1
@@ -390,11 +395,25 @@ def main():
                 pass
         save_json(src, ocr)
 
+    try:
+        import provenance
+        provenance.log(_dd(src), 'ocr', 'DSH + 视觉引擎(OCR 兜底)',
+                       [page] if page else None, '修正 %d 框 / 候选 %d' % (fixed, len(cands)))
+    except Exception:
+        pass
     print(json.dumps({'ok': True, 'mode': mode, 'candidates': len(cands), 'fixed': fixed,
                       'unchanged': unchanged, 'failed': failed, 'truncated': truncated,
                       'skipped_done': skipped_done, 'short_auto': bool(short_auto),
                       'tokens_in': tin, 'tokens_out': tout,
                       'seconds': round(time.time() - t0, 1)}, ensure_ascii=False))
+    # 兜底结束后重写失败报告(DSH 可读)
+    try:
+        import failure_report as _fr
+        _rep = _fr.build(sys.argv[1])
+        _fr._write(sys.argv[1], _rep)
+        print('[失败报告] 失败 %d 框' % _rep['failures_total'], flush=True)
+    except Exception as _e:
+        print('[失败报告] 生成失败:', _e, flush=True)
     return 0
 
 
