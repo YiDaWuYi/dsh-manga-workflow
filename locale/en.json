@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Manga translation workflow",
-    "description": "Local OCR for marked manga text, GPU de-text and Chinese embedding. Adds a sidebar workbench (start page, native folder picker, async workflow buttons, web box marker, settings and help pages) plus an auto-detection benchmark. Settings cover the vision model/API used for image reading and toggles for the sidebar entry, readiness banner and path memory. Provides the manga_ocr, manga_embed, manga_status and manga_bench tools.",
+    "description": "End-to-end manga localisation: auto box detection, local OCR (JA/KO/EN), AI translation, source-text erase plus Chinese embedding, and a failure report. Adds a sidebar workbench with per-page or whole-book scope, optional translation/original overlays, forced retranslation, and pre/post-embed checks; ships a desktop box marker and an auto-detection benchmark. Exposes manga_ocr, manga_embed, manga_status, manga_bench, manga_failures, manga_dsh_translate and manga_report.",
     "detail": "docs/DETAIL.md"
   }
 }
